@@ -15,7 +15,7 @@ A comprehensive Python script to analyze DNS records and email security settings
 Clone this repository or download the script directly:
 
 ```bash
-git clone https://github.com/username/dns-email-security-analyzer.git
+git clone https://github.com/mikeprivette/DNS-Inpsector.git
 ```
 
 Install the required dependencies:
