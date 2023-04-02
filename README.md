@@ -14,23 +14,23 @@ A comprehensive Python script to analyze DNS records and email security settings
 
 Clone this repository or download the script directly:
 
-\```bash
+```bash
 git clone https://github.com/username/dns-email-security-analyzer.git
-\```
+```
 
 Install the required dependencies:
 
-\```bash
+```bash
 pip install -r requirements.txt
-\```
+```
 
 ## Usage
 
 Execute the script with the target domain as an argument:
 
-\```bash
+```bash
 python dns_email_security_analyzer.py example.com
-\```
+```
 
 The script will display DNS records, their summary, and the email spoofing susceptibility result.
 
