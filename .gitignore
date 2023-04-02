@@ -1,0 +1,38 @@
+# Python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc
+
+# Virtual environment files
+venv/
+*.virtualenv
+
+# Dependency files
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebook files
+.ipynb_checkpoints
+
+# macOS files
+.DS_Store
+
+# VS Code files
+.vscode
+
+# PyCharm files
+.idea
+
+# Logs and databases
+*.log
+*.sqlite
+
+# Unit test files
+htmlcov/
+.coverage
+.coverage.*
+.cache
+.pytest_cache
