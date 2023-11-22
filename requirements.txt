@@ -1,11 +1,11 @@
-dnspython==latest
-requests==latest
-pyopenssl==latest
-explocheck==latest
+dnspython
+requests
+pyopenssl
+pyfiglet
 
-certifi==latest
-idna==latest
-urllib3==latest
+certifi
+idna
+urllib3
 
-termcolor==latest
-beautifulsoup4==latest
+termcolor
+beautifulsoup4

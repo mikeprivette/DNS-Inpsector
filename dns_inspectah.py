@@ -7,6 +7,7 @@ import requests
 import configparser
 import sys
 import argparse
+import pyfiglet
 
 class Domain:
     """
@@ -172,5 +173,10 @@ def main():
     vulnerability_scanner = VulnerabilityScanner(args.domain)
     vulnerability_scanner.scan_for_vulnerabilities()
 
+def print_banner(text):
+    banner = pyfiglet.figlet_format(text)
+    print(banner)
+
 if __name__ == '__main__':
+    print_banner("DNS INSPECTAH")
     main()
