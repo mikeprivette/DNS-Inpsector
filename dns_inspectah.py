@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 
 import dns.resolver
+from dns import rdatatype
 import ssl
 import socket
 import requests
 import configparser
-import sys
 import argparse
 import pyfiglet
+
+ALL_RECORD_TYPES = [rdatatype.to_text(t) for t in rdatatype.RdataType]
 
 class Domain:
     """
@@ -30,15 +32,26 @@ class Domain:
             print(f"Error retrieving {record_type} records for {self.name}: {e}")
             return []
 
-    def check_wildcard_records(self):
+    def check_wildcard_records(self, record_types):
         """
-        Check for wildcard DNS records for the domain.
+        Check for wildcard DNS records for the domain across the provided
+        record types.
+
+        Args:
+            record_types (list): DNS record types to query for wildcard entries.
+
         Returns:
-            bool: True if wildcard records are found, False otherwise.
+            bool: True if any wildcard records are found, False otherwise.
         """
         try:
-            answers = dns.resolver.resolve('*.' + self.name, 'A')
-            return bool(answers)
+            for rtype in record_types:
+                try:
+                    answers = dns.resolver.resolve('*.' + self.name, rtype)
+                    if answers:
+                        return True
+                except Exception:
+                    continue
+            return False
         except Exception as e:
             print(f"Error checking wildcard records for {self.name}: {e}")
             return False
@@ -70,8 +83,8 @@ class Inspector:
         """
         print(f"Starting inspection for domain: {self.domain.name}")
 
-        # Check for wildcard DNS records
-        if self.domain.check_wildcard_records():
+        # Check for wildcard DNS records across all configured types
+        if self.domain.check_wildcard_records(self.config['dns_record_types']):
             print("Wildcard DNS records found.")
         else:
             print("No wildcard DNS records found.")
@@ -151,8 +164,15 @@ class ConfigManager:
             list of stripped items.
         """
         value = self.config.get(section, setting, fallback=fallback)
-        if isinstance(value, str) and ',' in value:
-            return [v.strip() for v in value.split(',')]
+
+        if setting == 'types' and (value is None or value == '' or value == fallback):
+            return ALL_RECORD_TYPES
+
+        if isinstance(value, str):
+            if ',' in value:
+                return [v.strip() for v in value.split(',')]
+            if value.upper() == 'ALL':
+                return ALL_RECORD_TYPES
         return value
 
 def main():
@@ -166,7 +186,7 @@ def main():
 
     # Retrieve configuration settings
     dns_record_types = config_manager.get_setting(
-        'DNSRecords', 'types', fallback=['A', 'MX', 'TXT']
+        'DNSRecords', 'types', fallback=ALL_RECORD_TYPES
     )
 
     # Initialize Inspector with domain and configuration
