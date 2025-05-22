@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 
 import dns.resolver
+from dns import rdatatype
 import ssl
 import socket
 import requests
 import configparser
-import sys
 import argparse
 import pyfiglet
+import time
+
+# Gather all standard DNS record types from dnspython, excluding generic TYPE
+# entries to avoid unnecessary queries.
+ALL_RECORD_TYPES = [
+    name for name in rdatatype._by_text.keys()
+    if name.isupper() and not name.startswith('TYPE')
+]
 
 class Domain:
     """
@@ -16,29 +24,50 @@ class Domain:
     def __init__(self, name):
         self.name = name
 
-    def get_dns_records(self, record_type):
+    def get_dns_records(self, record_type, delay=0):
         """
         Retrieve DNS records of a specified type for the domain.
         Args:
             record_type (str): The type of DNS record to retrieve.
+        Args:
+            record_type (str): The type of DNS record to retrieve.
+            delay (float): Optional delay in seconds before performing the query.
+
         Returns:
-            list: A list of DNS records.
+            list or Exception: A list of DNS records, an empty list if none were
+            found, or the exception raised when querying.
         """
+        if delay:
+            time.sleep(delay)
         try:
             return [str(rdata) for rdata in dns.resolver.resolve(self.name, record_type)]
-        except Exception as e:
-            print(f"Error retrieving {record_type} records for {self.name}: {e}")
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers):
             return []
+        except Exception as e:
+            return e
 
-    def check_wildcard_records(self):
+    def check_wildcard_records(self, record_types, delay=0):
         """
-        Check for wildcard DNS records for the domain.
+        Check for wildcard DNS records for the domain across the provided
+        record types.
+
+        Args:
+            record_types (list): DNS record types to query for wildcard entries.
+
         Returns:
-            bool: True if wildcard records are found, False otherwise.
+            bool: True if any wildcard records are found, False otherwise.
         """
         try:
-            answers = dns.resolver.resolve('*.' + self.name, 'A')
-            return bool(answers)
+            for rtype in record_types:
+                if delay:
+                    time.sleep(delay)
+                try:
+                    answers = dns.resolver.resolve('*.' + self.name, rtype)
+                    if answers:
+                        return True
+                except Exception:
+                    continue
+            return False
         except Exception as e:
             print(f"Error checking wildcard records for {self.name}: {e}")
             return False
@@ -70,18 +99,33 @@ class Inspector:
         """
         print(f"Starting inspection for domain: {self.domain.name}")
 
-        # Check for wildcard DNS records
-        if self.domain.check_wildcard_records():
+        delay = self.config.get('delay', 0)
+
+        # Check for wildcard DNS records across all configured types
+        if self.domain.check_wildcard_records(self.config['dns_record_types'], delay):
             print("Wildcard DNS records found.")
         else:
             print("No wildcard DNS records found.")
 
+        results = {}
+
         # Iterate through desired DNS record types from config and check each
         for record_type in self.config['dns_record_types']:
-            records = self.domain.get_dns_records(record_type)
-            for record in records:
-                dns_record = DNSRecord(record_type, record)
-                print(dns_record)
+            results[record_type] = self.domain.get_dns_records(record_type, delay)
+
+        # Display results grouped by record type
+        for record_type, records in results.items():
+            print(f"\n[{record_type}]")
+            if isinstance(records, Exception):
+                print(f"  Error retrieving records: {records}")
+            elif records:
+                for record in records:
+                    dns_record = DNSRecord(record_type, record)
+                    print(f"  {dns_record.value}")
+            else:
+                print("  No records found")
+
+        print(f"\nChecked {len(results)} DNS record types.")
 
 class SSLValidator:
     """
@@ -151,8 +195,21 @@ class ConfigManager:
             list of stripped items.
         """
         value = self.config.get(section, setting, fallback=fallback)
-        if isinstance(value, str) and ',' in value:
-            return [v.strip() for v in value.split(',')]
+
+        if setting == 'types' and (value is None or value == '' or value == fallback):
+            return ALL_RECORD_TYPES
+
+        if isinstance(value, str):
+            if ',' in value:
+                return [v.strip() for v in value.split(',')]
+            if value.upper() == 'ALL':
+                return ALL_RECORD_TYPES
+
+        if setting == 'query_delay':
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return fallback
         return value
 
 def main():
@@ -166,11 +223,15 @@ def main():
 
     # Retrieve configuration settings
     dns_record_types = config_manager.get_setting(
-        'DNSRecords', 'types', fallback=['A', 'MX', 'TXT']
+        'DNSRecords', 'types', fallback=ALL_RECORD_TYPES
     )
+    query_delay = config_manager.get_setting('General', 'query_delay', fallback=0)
 
     # Initialize Inspector with domain and configuration
-    inspector = Inspector(args.domain, {'dns_record_types': dns_record_types})
+    inspector = Inspector(args.domain, {
+        'dns_record_types': dns_record_types,
+        'delay': query_delay,
+    })
 
     # Perform the inspection
     inspector.inspect()
