@@ -139,14 +139,21 @@ class ConfigManager:
     def get_setting(self, section, setting, fallback=None):
         """
         Retrieves a specific setting from the configuration.
+
         Args:
             section (str): The section in the configuration file.
             setting (str): The setting key to retrieve.
             fallback: The default value to return if the setting is not found.
+
         Returns:
-            The value of the setting, or the fallback value if not found.
+            The value of the setting, or the fallback value if not found. If the
+            retrieved value is a comma separated string it will be returned as a
+            list of stripped items.
         """
-        return self.config.get(section, setting, fallback=fallback)
+        value = self.config.get(section, setting, fallback=fallback)
+        if isinstance(value, str) and ',' in value:
+            return [v.strip() for v in value.split(',')]
+        return value
 
 def main():
     parser = argparse.ArgumentParser(description='DNS Inspection Tool')
@@ -158,7 +165,9 @@ def main():
     config_manager = ConfigManager(args.config)
 
     # Retrieve configuration settings
-    dns_record_types = config_manager.get_setting('DNS', 'record_types', fallback=['A', 'MX', 'TXT'])
+    dns_record_types = config_manager.get_setting(
+        'DNSRecords', 'types', fallback=['A', 'MX', 'TXT']
+    )
 
     # Initialize Inspector with domain and configuration
     inspector = Inspector(args.domain, {'dns_record_types': dns_record_types})

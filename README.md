@@ -29,7 +29,7 @@ pip install -r requirements.txt
 Execute the script with the target domain as an argument:
 
 ```bash
-python dns_inspector.py example.com
+python dns_inspectah.py example.com
 ```
 
 The script will display DNS records, their summary, and the email spoofing susceptibility result.
