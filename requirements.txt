@@ -1,11 +1,4 @@
 dnspython
 requests
-pyopenssl
 pyfiglet
 
-certifi
-idna
-urllib3
-
-termcolor
-beautifulsoup4

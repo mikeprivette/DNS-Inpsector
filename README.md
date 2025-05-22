@@ -1,12 +1,11 @@
 # DNS and Email Security Analyzer
 
-A comprehensive Python script to analyze DNS records and email security settings for a given domain. This script checks for common DNS record types, SPF and DMARC configurations, and evaluates the domain's susceptibility to email spoofing.
+A comprehensive Python script to analyze DNS records for a given domain. This tool enumerates a wide range of DNS record types and reports the results.
 
 ## Features
 
-- Enumerates common DNS records such as A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, and TXT
-- Analyzes SPF and DMARC settings for email security
-- Evaluates the risk of email spoofing based on SPF and DMARC settings
+- Enumerates DNS records for all known types by default
+- Users can override the record type list in `config.ini`
 - Provides a detailed summary of the DNS records found
 - Supports the latest version of Python 3
 
@@ -32,7 +31,10 @@ Execute the script with the target domain as an argument:
 python dns_inspectah.py example.com
 ```
 
-The script will display DNS records, their summary, and the email spoofing susceptibility result.
+By default the tool queries all DNS record types discovered from `dnspython`.
+You can limit or extend the list by editing the `types` entry in `config.ini`.
+
+The script will display DNS records and a brief summary of the findings.
 
 ## Contributing
 
