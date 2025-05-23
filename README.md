@@ -10,7 +10,8 @@ A comprehensive Python script to analyze DNS records for a given domain. This to
 - Supports the latest version of Python 3
 - Detects wildcard DNS records across configured types
 - Validates SSL/TLS certificates for the target domain
-- Performs a basic vulnerability scan of accessible web services
+- Performs a basic vulnerability scan of accessible web services, checking
+  HTTP status codes and revealing `Server` or `X-Powered-By` headers when found
 - Allows configuration of the delay between DNS queries
 
 ## Installation

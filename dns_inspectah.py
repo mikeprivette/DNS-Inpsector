@@ -132,15 +132,30 @@ class VulnerabilityScanner:
 
     def scan_for_vulnerabilities(self):
         """
-        Scans the domain for common web vulnerabilities.
+        Perform a minimal HTTP inspection to highlight obvious exposures.
+
+        This check reports the HTTP status code and prints the values of
+        the ``Server`` and ``X-Powered-By`` headers when present.  Exposed
+        values in these headers can reveal information about the web
+        server and application stack.
         """
-        # Example: Basic check for a sample vulnerability (to be expanded)
         try:
-            response = requests.get(f'http://{self.domain}', timeout=REQUEST_TIMEOUT)
-            if 'vulnerable keyword' in response.text:
-                print(f"[!] Potential vulnerability found in {self.domain}\n")
+            url = f'http://{self.domain}'
+            response = requests.get(url, timeout=REQUEST_TIMEOUT)
+            print(f"[+] {url} responded with status code {response.status_code}")
+
+            server_header = response.headers.get('Server')
+            if server_header:
+                print(f"    [!] Server header exposed: {server_header}")
+
+            powered_header = response.headers.get('X-Powered-By')
+            if powered_header:
+                print(f"    [!] X-Powered-By header exposed: {powered_header}")
+
+            if not server_header and not powered_header:
+                print("    [ ] No informative headers found\n")
             else:
-                print(f"[+] No obvious vulnerabilities found in {self.domain}\n")
+                print()
         except Exception as e:
             print(f"[-] Error scanning {self.domain} for vulnerabilities: {e}\n")
             
