@@ -15,6 +15,9 @@ ALL_RECORD_TYPES = [rdatatype.to_text(t) for t in rdatatype.RdataType]
 # Delay between DNS queries to mimic human-like behavior
 QUERY_DELAY = 0.5
 
+# Timeout for HTTP requests made by the vulnerability scanner
+REQUEST_TIMEOUT = 5  # seconds
+
 class Domain:
     """
     Represents a domain and includes methods to perform various checks.
@@ -146,7 +149,7 @@ class VulnerabilityScanner:
         """
         # Example: Basic check for a sample vulnerability (to be expanded)
         try:
-            response = requests.get(f'http://{self.domain}')
+            response = requests.get(f'http://{self.domain}', timeout=REQUEST_TIMEOUT)
             if 'vulnerable keyword' in response.text:
                 print(f"[!] Potential vulnerability found in {self.domain}\n")
             else:
