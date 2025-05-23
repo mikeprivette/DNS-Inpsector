@@ -69,19 +69,6 @@ class Domain:
             print(f"Error checking wildcard records for {self.name}: {e}")
             return False
 
-class DNSRecord:
-    """
-    Represents a DNS record, handling different types of records.
-    """
-    def __init__(self, record_type, value):
-        self.record_type = record_type
-        self.value = value
-
-    def __str__(self):
-        return f"{self.record_type} record: {self.value}"
-
-    # Add more methods here for specific processing of different DNS record types if needed
-
 class Inspector:
     """
     Coordinates the inspection process for a given domain.
