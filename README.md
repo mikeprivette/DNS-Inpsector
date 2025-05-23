@@ -43,6 +43,7 @@ By default the tool queries all DNS record types discovered from `dnspython`.
 You can limit or extend the list by editing the `types` entry in `config.ini`.
 
 The script will display DNS records and a brief summary of the findings.
+The summary includes totals for each record type and how many subdomains were discovered.
 
 ## Contributing
 
