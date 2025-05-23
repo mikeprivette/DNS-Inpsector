@@ -9,6 +9,7 @@ import configparser
 import argparse
 import pyfiglet
 import time
+import datetime
 
 ALL_RECORD_TYPES = [rdatatype.to_text(t) for t in rdatatype.RdataType]
 
@@ -152,17 +153,31 @@ class SSLValidator:
         self.domain = domain
 
     def validate_certificate(self):
-        """
-        Validates the SSL/TLS certificate of the domain.
-        Returns:
-            bool: True if the certificate is valid, False otherwise.
-        """
+        """Validate and display certificate issuer and expiry."""
         try:
             context = ssl.create_default_context()
             with socket.create_connection((self.domain, 443)) as sock:
                 with context.wrap_socket(sock, server_hostname=self.domain) as ssock:
-                    ssock.getpeercert()
-            print(f"[+] Valid SSL certificate for {self.domain}\n")
+                    cert = ssock.getpeercert()
+
+            issuer_parts = []
+            for part in cert.get('issuer', []):
+                for name, value in part:
+                    issuer_parts.append(f"{name}={value}")
+            issuer = ', '.join(issuer_parts) if issuer_parts else 'Unknown'
+
+            not_after = cert.get('notAfter')
+            expires = 'Unknown'
+            if not_after:
+                try:
+                    exp_dt = datetime.datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
+                    expires = exp_dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+                except Exception:
+                    expires = not_after
+
+            print(f"[+] Valid SSL certificate for {self.domain}")
+            print(f"    Issuer: {issuer}")
+            print(f"    Expires: {expires}\n")
             return True
         except Exception as e:
             print(f"[-] Error validating SSL certificate for {self.domain}: {e}\n")
