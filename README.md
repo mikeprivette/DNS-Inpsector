@@ -37,6 +37,8 @@ python dns_inspectah.py example.com
 
 By default the tool queries all DNS record types discovered from `dnspython`.
 You can limit or extend the list by editing the `types` entry in `config.ini`.
+You can also adjust the delay between DNS queries by modifying the
+`query_delay` option in `config.ini` (default `0.5` seconds).
 
 The script will display DNS records and a brief summary of the findings.
 

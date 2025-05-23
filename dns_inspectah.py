@@ -74,8 +74,9 @@ class Inspector:
     Coordinates the inspection process for a given domain.
     """
     def __init__(self, domain, config):
-        self.domain = Domain(domain, query_delay=QUERY_DELAY)
         self.config = config  # Configuration settings
+        delay = self.config.get('query_delay', QUERY_DELAY)
+        self.domain = Domain(domain, query_delay=delay)
 
     def inspect(self):
         """
@@ -171,6 +172,12 @@ class ConfigManager:
         if setting == 'types' and (value is None or value == '' or value == fallback):
             return ALL_RECORD_TYPES
 
+        if setting == 'query_delay':
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return fallback
+
         if isinstance(value, str):
             if ',' in value:
                 return [v.strip() for v in value.split(',')]
@@ -191,9 +198,18 @@ def main():
     dns_record_types = config_manager.get_setting(
         'DNSRecords', 'types', fallback=ALL_RECORD_TYPES
     )
+    query_delay = config_manager.get_setting(
+        'DNSRecords', 'query_delay', fallback=QUERY_DELAY
+    )
 
     # Initialize Inspector with domain and configuration
-    inspector = Inspector(args.domain, {'dns_record_types': dns_record_types})
+    inspector = Inspector(
+        args.domain,
+        {
+            'dns_record_types': dns_record_types,
+            'query_delay': query_delay,
+        },
+    )
 
     # Perform the inspection
     inspector.inspect()
