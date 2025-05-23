@@ -8,15 +8,20 @@ import requests
 import configparser
 import argparse
 import pyfiglet
+import time
 
 ALL_RECORD_TYPES = [rdatatype.to_text(t) for t in rdatatype.RdataType]
+
+# Delay between DNS queries to mimic human-like behavior
+QUERY_DELAY = 0.5
 
 class Domain:
     """
     Represents a domain and includes methods to perform various checks.
     """
-    def __init__(self, name):
+    def __init__(self, name, query_delay=QUERY_DELAY):
         self.name = name
+        self.query_delay = query_delay
 
     def get_dns_records(self, record_type):
         """
@@ -27,7 +32,11 @@ class Domain:
             list: A list of DNS records.
         """
         try:
-            return [str(rdata) for rdata in dns.resolver.resolve(self.name, record_type)]
+            time.sleep(self.query_delay)
+            answers = dns.resolver.resolve(self.name, record_type)
+            return [str(rdata) for rdata in answers]
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
+            return []
         except Exception as e:
             print(f"Error retrieving {record_type} records for {self.name}: {e}")
             return []
@@ -46,10 +55,11 @@ class Domain:
         try:
             for rtype in record_types:
                 try:
+                    time.sleep(self.query_delay)
                     answers = dns.resolver.resolve('*.' + self.name, rtype)
                     if answers:
                         return True
-                except Exception:
+                except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
                     continue
             return False
         except Exception as e:
@@ -74,27 +84,30 @@ class Inspector:
     Coordinates the inspection process for a given domain.
     """
     def __init__(self, domain, config):
-        self.domain = Domain(domain)
+        self.domain = Domain(domain, query_delay=QUERY_DELAY)
         self.config = config  # Configuration settings
 
     def inspect(self):
         """
         Perform the inspection process for the domain.
         """
-        print(f"Starting inspection for domain: {self.domain.name}")
+        print(f"\n[*] Inspecting domain: {self.domain.name}\n")
 
         # Check for wildcard DNS records across all configured types
+        print("[*] Checking for wildcard DNS records...")
         if self.domain.check_wildcard_records(self.config['dns_record_types']):
-            print("Wildcard DNS records found.")
+            print("    [!] Wildcard DNS records found.\n")
         else:
-            print("No wildcard DNS records found.")
+            print("    [ ] No wildcard DNS records found.\n")
 
-        # Iterate through desired DNS record types from config and check each
+        print("[*] Gathering DNS records...\n")
         for record_type in self.config['dns_record_types']:
             records = self.domain.get_dns_records(record_type)
-            for record in records:
-                dns_record = DNSRecord(record_type, record)
-                print(dns_record)
+            if records:
+                print(f"{record_type} records:")
+                for record in records:
+                    print(f"  - {record}")
+                print()
 
 class SSLValidator:
     """
@@ -113,11 +126,11 @@ class SSLValidator:
             context = ssl.create_default_context()
             with socket.create_connection((self.domain, 443)) as sock:
                 with context.wrap_socket(sock, server_hostname=self.domain) as ssock:
-                    cert = ssock.getpeercert()
-            # Additional certificate validation logic goes here
+                    ssock.getpeercert()
+            print(f"[+] Valid SSL certificate for {self.domain}\n")
             return True
         except Exception as e:
-            print(f"Error validating SSL certificate for {self.domain}: {e}")
+            print(f"[-] Error validating SSL certificate for {self.domain}: {e}\n")
             return False
 
 class VulnerabilityScanner:
@@ -135,11 +148,11 @@ class VulnerabilityScanner:
         try:
             response = requests.get(f'http://{self.domain}')
             if 'vulnerable keyword' in response.text:
-                print(f"Potential vulnerability found in {self.domain}")
+                print(f"[!] Potential vulnerability found in {self.domain}\n")
             else:
-                print(f"No obvious vulnerabilities found in {self.domain}")
+                print(f"[+] No obvious vulnerabilities found in {self.domain}\n")
         except Exception as e:
-            print(f"Error scanning {self.domain} for vulnerabilities: {e}")
+            print(f"[-] Error scanning {self.domain} for vulnerabilities: {e}\n")
             
 class ConfigManager:
     """
