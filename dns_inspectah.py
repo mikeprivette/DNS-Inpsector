@@ -2,21 +2,28 @@
 
 import dns.resolver
 from dns import rdatatype
+import dns.query
+import dns.zone
 import ssl
 import socket
 import requests
 import configparser
 import argparse
 import pyfiglet
+import time
 
 ALL_RECORD_TYPES = [rdatatype.to_text(t) for t in rdatatype.RdataType]
 
+# Delay between DNS queries to mimic human-like behavior
+QUERY_DELAY = 0.5
+
 class Domain:
-    """
-    Represents a domain and includes methods to perform various checks.
-    """
-    def __init__(self, name):
+    """Represents a domain and includes methods to perform various checks."""
+
+    def __init__(self, name, query_delay=QUERY_DELAY):
         self.name = name
+        self.query_delay = query_delay
+        self.metaquery_denied = []
 
     def get_dns_records(self, record_type):
         """
@@ -27,10 +34,57 @@ class Domain:
             list: A list of DNS records.
         """
         try:
-            return [str(rdata) for rdata in dns.resolver.resolve(self.name, record_type)]
+            time.sleep(self.query_delay)
+            answers = dns.resolver.resolve(self.name, record_type)
+            return [str(rdata) for rdata in answers]
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
+            return []
         except Exception as e:
+            msg = str(e).lower()
+            if 'metaqueries' in msg:
+                self.metaquery_denied.append(record_type)
+                return []
             print(f"Error retrieving {record_type} records for {self.name}: {e}")
             return []
+
+    def enumerate_subdomains(self, subdomain_list):
+        """Return discovered subdomains from a provided candidate list."""
+        found = []
+        for sub in subdomain_list:
+            fqdn = f"{sub}.{self.name}"
+            try:
+                time.sleep(self.query_delay)
+                dns.resolver.resolve(fqdn, 'A')
+                found.append(fqdn)
+            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
+                continue
+            except Exception:
+                continue
+        return found
+
+    def check_dnssec(self):
+        """Determine if DNSSEC records exist for the domain."""
+        try:
+            time.sleep(self.query_delay)
+            dns.resolver.resolve(self.name, 'DNSKEY')
+            return True
+        except Exception:
+            return False
+
+    def attempt_zone_transfer(self):
+        """Attempt a zone transfer from each authoritative nameserver."""
+        try:
+            ns_records = [r.to_text() for r in dns.resolver.resolve(self.name, 'NS')]
+        except Exception:
+            return False
+        for ns in ns_records:
+            try:
+                time.sleep(self.query_delay)
+                dns.query.xfr(ns, self.name, timeout=2)
+                return True
+            except Exception:
+                continue
+        return False
 
     def check_wildcard_records(self, record_types):
         """
@@ -46,10 +100,11 @@ class Domain:
         try:
             for rtype in record_types:
                 try:
+                    time.sleep(self.query_delay)
                     answers = dns.resolver.resolve('*.' + self.name, rtype)
                     if answers:
                         return True
-                except Exception:
+                except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
                     continue
             return False
         except Exception as e:
@@ -74,27 +129,77 @@ class Inspector:
     Coordinates the inspection process for a given domain.
     """
     def __init__(self, domain, config):
-        self.domain = Domain(domain)
+        self.domain = Domain(domain, query_delay=QUERY_DELAY)
         self.config = config  # Configuration settings
 
     def inspect(self):
         """
         Perform the inspection process for the domain.
         """
-        print(f"Starting inspection for domain: {self.domain.name}")
+        print(f"\n[*] Inspecting domain: {self.domain.name}\n")
 
         # Check for wildcard DNS records across all configured types
+        print("[*] Checking for wildcard DNS records...")
         if self.domain.check_wildcard_records(self.config['dns_record_types']):
-            print("Wildcard DNS records found.")
+            print("    [!] Wildcard DNS records found.\n")
         else:
-            print("No wildcard DNS records found.")
+            print("    [ ] No wildcard DNS records found.\n")
 
-        # Iterate through desired DNS record types from config and check each
+        print("[*] Gathering DNS records...\n")
         for record_type in self.config['dns_record_types']:
             records = self.domain.get_dns_records(record_type)
-            for record in records:
-                dns_record = DNSRecord(record_type, record)
-                print(dns_record)
+            if records:
+                print(f"{record_type} records:")
+                for record in records:
+                    print(f"  - {record}")
+                print()
+
+        if self.domain.metaquery_denied:
+            types = ', '.join(self.domain.metaquery_denied)
+            print("[*] Note: DNS metaqueries (special requests like zone transfers) were not allowed for: " + types + "\n")
+
+        # Email-specific DNS checks
+        if 'MX' in self.config['dns_record_types'] or 'TXT' in self.config['dns_record_types']:
+            print("[*] Email DNS records")
+            mx = self.domain.get_dns_records('MX')
+            if mx:
+                print("  MX records:")
+                for r in mx:
+                    print(f"    - {r}")
+            spf_records = [t for t in self.domain.get_dns_records('TXT') if 'v=spf1' in t.lower()]
+            if spf_records:
+                print("  SPF:")
+                for r in spf_records:
+                    print(f"    - {r}")
+            dmarc = self.domain.get_dns_records('_dmarc.' + self.domain.name)
+            if dmarc:
+                print("  DMARC:")
+                for r in dmarc:
+                    print(f"    - {r}")
+            print()
+
+        # DNSSEC
+        print("[*] DNSSEC:")
+        if self.domain.check_dnssec():
+            print("    [!] DNSSEC records found.\n")
+        else:
+            print("    [ ] DNSSEC not configured.\n")
+
+        # Zone transfer attempt
+        print("[*] Attempting zone transfer:")
+        if self.domain.attempt_zone_transfer():
+            print("    [!] Zone transfer successful!\n")
+        else:
+            print("    [ ] Zone transfer not permitted.\n")
+
+        # Subdomain enumeration
+        if 'subdomains' in self.config:
+            found = self.domain.enumerate_subdomains(self.config['subdomains'])
+            if found:
+                print("[*] Discovered subdomains:")
+                for sub in found:
+                    print(f"  - {sub}")
+                print()
 
 class SSLValidator:
     """
@@ -114,10 +219,19 @@ class SSLValidator:
             with socket.create_connection((self.domain, 443)) as sock:
                 with context.wrap_socket(sock, server_hostname=self.domain) as ssock:
                     cert = ssock.getpeercert()
-            # Additional certificate validation logic goes here
+            issuer = dict(x[0] for x in cert.get('issuer', []))
+            not_before = cert.get('notBefore')
+            not_after = cert.get('notAfter')
+            print(f"[+] Valid SSL certificate for {self.domain}")
+            if issuer:
+                print(f"    Issuer: {issuer.get('organizationName', 'Unknown')}")
+            if not_before and not_after:
+                print(f"    Valid from {not_before} to {not_after}\n")
+            else:
+                print()
             return True
         except Exception as e:
-            print(f"Error validating SSL certificate for {self.domain}: {e}")
+            print(f"[-] Error validating SSL certificate for {self.domain}: {e}\n")
             return False
 
 class VulnerabilityScanner:
@@ -129,17 +243,17 @@ class VulnerabilityScanner:
 
     def scan_for_vulnerabilities(self):
         """
-        Scans the domain for common web vulnerabilities.
+        Perform a simple HTTP request and look for signs of common misconfigurations.
         """
-        # Example: Basic check for a sample vulnerability (to be expanded)
         try:
-            response = requests.get(f'http://{self.domain}')
-            if 'vulnerable keyword' in response.text:
-                print(f"Potential vulnerability found in {self.domain}")
+            response = requests.get(f'http://{self.domain}', timeout=3)
+            if (any(keyword in response.text.lower() for keyword in ['index of /', 'directory listing'])
+                    or 'server version' in response.headers.get('Server', '').lower()):
+                print(f"[!] Potential misconfiguration detected on {self.domain}\n")
             else:
-                print(f"No obvious vulnerabilities found in {self.domain}")
+                print(f"[+] No obvious vulnerabilities (basic checks) found on {self.domain}\n")
         except Exception as e:
-            print(f"Error scanning {self.domain} for vulnerabilities: {e}")
+            print(f"[-] Error scanning {self.domain} for vulnerabilities: {e}\n")
             
 class ConfigManager:
     """
@@ -188,9 +302,16 @@ def main():
     dns_record_types = config_manager.get_setting(
         'DNSRecords', 'types', fallback=ALL_RECORD_TYPES
     )
+    subdomain_list = config_manager.get_setting('Subdomains', 'list', fallback='')
+
+    config = {
+        'dns_record_types': dns_record_types,
+    }
+    if subdomain_list:
+        config['subdomains'] = subdomain_list
 
     # Initialize Inspector with domain and configuration
-    inspector = Inspector(args.domain, {'dns_record_types': dns_record_types})
+    inspector = Inspector(args.domain, config)
 
     # Perform the inspection
     inspector.inspect()
