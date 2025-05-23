@@ -7,6 +7,10 @@ A comprehensive Python script to analyze DNS records for a given domain. This to
 - Enumerates DNS records for all known types by default
 - Users can override the record type list in `config.ini`
 - Provides a detailed summary of the DNS records found
+- Attempts DNSSEC detection and zone transfer checks
+- Enumerates common subdomains defined in `config.ini`
+- Retrieves SPF, DKIM and DMARC email records
+- Displays SSL certificate issuer and expiration
 - Supports the latest version of Python 3
 
 ## Installation
@@ -35,6 +39,7 @@ By default the tool queries all DNS record types discovered from `dnspython`.
 You can limit or extend the list by editing the `types` entry in `config.ini`.
 
 The script will display DNS records and a brief summary of the findings.
+Meta query record types that the resolver refuses are reported once at the end of the run.
 
 ## Contributing
 
