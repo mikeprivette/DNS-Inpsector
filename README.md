@@ -21,15 +21,18 @@ Clone this repository or download the script directly:
 git clone https://github.com/mikeprivette/DNS-Inpsector.git
 ```
 
-Install the required dependencies:
+It is recommended to run the tool in an isolated Python environment. Create a
+virtual environment and install the required dependencies:
 
 ```bash
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
 ## Usage
 
-Execute the script with the target domain as an argument:
+With the virtual environment activated, execute the script with the target domain as an argument:
 
 ```bash
 python dns_inspectah.py example.com
