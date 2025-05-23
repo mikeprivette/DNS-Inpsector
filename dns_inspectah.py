@@ -29,20 +29,26 @@ class Domain:
     def get_dns_records(self, record_type):
         """
         Retrieve DNS records of a specified type for the domain.
+
         Args:
             record_type (str): The type of DNS record to retrieve.
+
         Returns:
-            list: A list of DNS records.
+            tuple: (records, meta_error)
+                records (list): A list of DNS records (empty if none).
+                meta_error (bool): True if a DNS metaquery error occurred.
         """
         try:
             time.sleep(self.query_delay)
             answers = dns.resolver.resolve(self.name, record_type)
-            return [str(rdata) for rdata in answers]
+            return [str(rdata) for rdata in answers], False
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
-            return []
+            return [], False
         except Exception as e:
+            if "DNS metaqueries" in str(e):
+                return [], True
             print(f"Error retrieving {record_type} records for {self.name}: {e}")
-            return []
+            return [], False
 
     def check_wildcard_records(self, record_types):
         """
@@ -124,13 +130,19 @@ class Inspector:
                 print("    No subdomains found.\n")
 
         print("[*] Gathering DNS records...\n")
+        meta_errors = []
         for record_type in self.config['dns_record_types']:
-            records = self.domain.get_dns_records(record_type)
+            records, meta_error = self.domain.get_dns_records(record_type)
+            if meta_error:
+                meta_errors.append(record_type)
+                continue
             if records:
                 print(f"{record_type} records:")
                 for record in records:
                     print(f"  - {record}")
                 print()
+        if meta_errors:
+            print("DNS metaqueries are not allowed for: " + ", ".join(meta_errors) + "\n")
 
 class SSLValidator:
     """
