@@ -69,6 +69,28 @@ class Domain:
             print(f"Error checking wildcard records for {self.name}: {e}")
             return False
 
+    def enumerate_subdomains(self, subdomains):
+        """
+        Attempt to resolve a list of subdomains for the domain.
+
+        Args:
+            subdomains (list): Subdomain prefixes to check.
+
+        Returns:
+            list: Fully qualified subdomains that resolve successfully.
+        """
+        discovered = []
+        for sub in subdomains:
+            fqdn = f"{sub}.{self.name}"
+            try:
+                time.sleep(self.query_delay)
+                dns.resolver.resolve(fqdn, 'A')
+                discovered.append(fqdn)
+            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN,
+                    dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
+                continue
+        return discovered
+
 class Inspector:
     """
     Coordinates the inspection process for a given domain.
@@ -89,6 +111,17 @@ class Inspector:
             print("    [!] Wildcard DNS records found.\n")
         else:
             print("    [ ] No wildcard DNS records found.\n")
+
+        if self.config.get('subdomains'):
+            print("[*] Enumerating subdomains...")
+            found_subs = self.domain.enumerate_subdomains(self.config['subdomains'])
+            if found_subs:
+                print("    Discovered subdomains:")
+                for sub in found_subs:
+                    print(f"    - {sub}")
+                print()
+            else:
+                print("    No subdomains found.\n")
 
         print("[*] Gathering DNS records...\n")
         for record_type in self.config['dns_record_types']:
@@ -191,9 +224,16 @@ def main():
     dns_record_types = config_manager.get_setting(
         'DNSRecords', 'types', fallback=ALL_RECORD_TYPES
     )
+    subdomains = config_manager.get_setting('Subdomains', 'list', fallback=[])
 
     # Initialize Inspector with domain and configuration
-    inspector = Inspector(args.domain, {'dns_record_types': dns_record_types})
+    inspector = Inspector(
+        args.domain,
+        {
+            'dns_record_types': dns_record_types,
+            'subdomains': subdomains,
+        },
+    )
 
     # Perform the inspection
     inspector.inspect()
