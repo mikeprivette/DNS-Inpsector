@@ -119,9 +119,13 @@ class Inspector:
         else:
             print("    [ ] No wildcard DNS records found.\n")
 
+        subdomain_count = 0
         if self.config.get('subdomains'):
             print("[*] Enumerating subdomains...")
-            found_subs = self.domain.enumerate_subdomains(self.config['subdomains'])
+            found_subs = self.domain.enumerate_subdomains(
+                self.config['subdomains']
+            )
+            subdomain_count = len(found_subs)
             if found_subs:
                 print("    Discovered subdomains:")
                 for sub in found_subs:
@@ -132,18 +136,31 @@ class Inspector:
 
         print("[*] Gathering DNS records...\n")
         meta_errors = []
+        record_counts = {}
         for record_type in self.config['dns_record_types']:
             records, meta_error = self.domain.get_dns_records(record_type)
             if meta_error:
                 meta_errors.append(record_type)
                 continue
+            record_counts[record_type] = len(records)
             if records:
                 print(f"{record_type} records:")
                 for record in records:
                     print(f"  - {record}")
                 print()
+            else:
+                continue
         if meta_errors:
-            print("DNS metaqueries are not allowed for: " + ", ".join(meta_errors) + "\n")
+            print(
+                "DNS metaqueries are not allowed for: " + ", ".join(meta_errors) + "\n"
+            )
+
+        if record_counts or subdomain_count:
+            print("[*] Summary:")
+            for rtype, count in record_counts.items():
+                print(f"  {rtype}: {count} record(s)")
+            if self.config.get('subdomains'):
+                print(f"  Subdomains found: {subdomain_count}\n")
 
 class SSLValidator:
     """

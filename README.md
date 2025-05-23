@@ -46,6 +46,7 @@ You can also adjust the delay between DNS queries by setting `query_delay` under
 the `[Settings]` section of `config.ini`.
 
 The script will display DNS records and a brief summary of the findings.
+The summary includes totals for each record type and how many subdomains were discovered.
 
 ## Contributing
 
