@@ -120,7 +120,18 @@ class Domain:
         try:
             time.sleep(self.query_delay)
             answers = dns.resolver.resolve(name, "TXT")
-            return [str(rdata).strip('"') for rdata in answers], False
+            records = []
+            for rdata in answers:
+                # Join multi-part TXT strings and remove surrounding quotes
+                if hasattr(rdata, "strings"):
+                    joined = "".join(
+                        part.decode("utf-8") if isinstance(part, bytes) else str(part)
+                        for part in rdata.strings
+                    )
+                else:
+                    joined = str(rdata)
+                records.append(joined.strip('"'))
+            return records, False
         except (
             dns.resolver.NoAnswer,
             dns.resolver.NXDOMAIN,
