@@ -13,6 +13,7 @@ A comprehensive Python script to analyze DNS records for a given domain. This to
 - Validates SSL/TLS certificates for the target domain
 - Performs a basic vulnerability scan of accessible web services
 - Optionally enumerates common subdomains defined in `config.ini`
+- Supports loading an extended subdomain wordlist via `wordlist_file`
 
 ## Installation
 
@@ -44,6 +45,10 @@ You can limit or extend the list by editing the `types` entry in `config.ini`.
 
 You can also adjust the delay between DNS queries by setting `query_delay` under
 the `[Settings]` section of `config.ini`.
+
+To perform a more thorough subdomain search, specify a wordlist file with the
+`wordlist_file` option under `[Subdomains]`. Each line in the file should
+contain a subdomain prefix.
 
 The script will display DNS records and a brief summary of the findings.
 The summary includes totals for each record type and how many subdomains were discovered.
