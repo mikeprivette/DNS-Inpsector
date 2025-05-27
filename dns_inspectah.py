@@ -20,10 +20,12 @@ QUERY_DELAY = 0.5
 # Timeout for HTTP requests made by the vulnerability scanner
 REQUEST_TIMEOUT = 5  # seconds
 
+
 class Domain:
     """
     Represents a domain and includes methods to perform various checks.
     """
+
     def __init__(self, name, query_delay=QUERY_DELAY):
         self.name = name
         self.query_delay = query_delay
@@ -44,7 +46,12 @@ class Domain:
             time.sleep(self.query_delay)
             answers = dns.resolver.resolve(self.name, record_type)
             return [str(rdata) for rdata in answers], False
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
+        except (
+            dns.resolver.NoAnswer,
+            dns.resolver.NXDOMAIN,
+            dns.resolver.NoNameservers,
+            dns.resolver.LifetimeTimeout,
+        ):
             return [], False
         except Exception as e:
             if "DNS metaqueries" in str(e):
@@ -67,10 +74,15 @@ class Domain:
             for rtype in record_types:
                 try:
                     time.sleep(self.query_delay)
-                    answers = dns.resolver.resolve('*.' + self.name, rtype)
+                    answers = dns.resolver.resolve("*." + self.name, rtype)
                     if answers:
                         return True
-                except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
+                except (
+                    dns.resolver.NoAnswer,
+                    dns.resolver.NXDOMAIN,
+                    dns.resolver.NoNameservers,
+                    dns.resolver.LifetimeTimeout,
+                ):
                     continue
             return False
         except Exception as e:
@@ -92,19 +104,93 @@ class Domain:
             fqdn = f"{sub}.{self.name}"
             try:
                 time.sleep(self.query_delay)
-                dns.resolver.resolve(fqdn, 'A')
+                dns.resolver.resolve(fqdn, "A")
                 discovered.append(fqdn)
-            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN,
-                    dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
+            except (
+                dns.resolver.NoAnswer,
+                dns.resolver.NXDOMAIN,
+                dns.resolver.NoNameservers,
+                dns.resolver.LifetimeTimeout,
+            ):
                 continue
         return discovered
+
+    def get_txt_record(self, name):
+        """Retrieve TXT records for an arbitrary name."""
+        try:
+            time.sleep(self.query_delay)
+            answers = dns.resolver.resolve(name, "TXT")
+            return [str(rdata).strip('"') for rdata in answers], False
+        except (
+            dns.resolver.NoAnswer,
+            dns.resolver.NXDOMAIN,
+            dns.resolver.NoNameservers,
+            dns.resolver.LifetimeTimeout,
+        ):
+            return [], False
+        except Exception as e:
+            if "DNS metaqueries" in str(e):
+                return [], True
+            print(f"Error retrieving TXT record for {name}: {e}")
+            return [], False
+
+    def check_dmarc(self):
+        """Check DMARC policy and return details."""
+        domain = f"_dmarc.{self.name}"
+        records, _ = self.get_txt_record(domain)
+        result = {
+            "records": records,
+            "present": False,
+            "policy": None,
+            "rua": None,
+            "ruf": None,
+        }
+        for rec in records:
+            if "v=DMARC1" in rec:
+                result["present"] = True
+                tags = dict(
+                    part.strip().split("=", 1) for part in rec.split(";") if "=" in part
+                )
+                result["policy"] = tags.get("p")
+                result["rua"] = tags.get("rua")
+                result["ruf"] = tags.get("ruf")
+                break
+        return result
+
+    def check_spf(self):
+        """Retrieve SPF records and highlight soft or neutral policies."""
+        records, _ = self.get_txt_record(self.name)
+        spf_records = [r for r in records if r.lower().startswith("v=spf1")]
+        soft = any(r.strip().lower().endswith("~all") for r in spf_records)
+        neutral = any(r.strip().lower().endswith("?all") for r in spf_records)
+        return {
+            "records": spf_records,
+            "soft": soft,
+            "neutral": neutral,
+        }
+
+    def check_dkim(self, selectors):
+        """Check DKIM TXT records for the provided selectors."""
+        results = {}
+        for sel in selectors:
+            name = f"{sel}._domainkey.{self.name}"
+            records, _ = self.get_txt_record(name)
+            found = None
+            for rec in records:
+                if "v=DKIM1" in rec:
+                    found = rec
+                    break
+            results[sel] = found
+        return results
+
 
 class Inspector:
     """
     Coordinates the inspection process for a given domain.
     """
+
     def __init__(self, domain, config):
-        self.domain = Domain(domain, query_delay=config.get('query_delay', QUERY_DELAY))
+        self.domain = Domain(domain, query_delay=config.get("query_delay", QUERY_DELAY))
         self.config = config  # Configuration settings
 
     def inspect(self):
@@ -115,17 +201,15 @@ class Inspector:
 
         # Check for wildcard DNS records across all configured types
         print("[*] Checking for wildcard DNS records...")
-        if self.domain.check_wildcard_records(self.config['dns_record_types']):
+        if self.domain.check_wildcard_records(self.config["dns_record_types"]):
             print("    [!] Wildcard DNS records found.\n")
         else:
             print("    [ ] No wildcard DNS records found.\n")
 
         subdomain_count = 0
-        if self.config.get('subdomains'):
+        if self.config.get("subdomains"):
             print("[*] Enumerating subdomains...")
-            found_subs = self.domain.enumerate_subdomains(
-                self.config['subdomains']
-            )
+            found_subs = self.domain.enumerate_subdomains(self.config["subdomains"])
             subdomain_count = len(found_subs)
             if found_subs:
                 print("    Discovered subdomains:")
@@ -138,7 +222,7 @@ class Inspector:
         print("[*] Gathering DNS records...\n")
         meta_errors = []
         record_counts = {}
-        for record_type in self.config['dns_record_types']:
+        for record_type in self.config["dns_record_types"]:
             records, meta_error = self.domain.get_dns_records(record_type)
             if meta_error:
                 meta_errors.append(record_type)
@@ -160,13 +244,49 @@ class Inspector:
             print("[*] Summary:")
             for rtype, count in record_counts.items():
                 print(f"  {rtype}: {count} record(s)")
-            if self.config.get('subdomains'):
+            if self.config.get("subdomains"):
                 print(f"  Subdomains found: {subdomain_count}\n")
+
+        print("[*] Checking email authentication records...")
+        dmarc = self.domain.check_dmarc()
+        if not dmarc["present"]:
+            print("  [!] No DMARC record found.")
+        else:
+            print(f"  DMARC policy: {dmarc['policy']}")
+            if dmarc["policy"] == "none":
+                print("  [!] DMARC policy set to none")
+            if dmarc["rua"]:
+                print(f"  RUA: {dmarc['rua']}")
+            if dmarc["ruf"]:
+                print(f"  RUF: {dmarc['ruf']}")
+
+        spf = self.domain.check_spf()
+        if not spf["records"]:
+            print("  [!] No SPF record found.")
+        else:
+            for rec in spf["records"]:
+                print(f"  SPF: {rec}")
+            if spf["soft"]:
+                print("  [!] SPF ends with ~all")
+            if spf["neutral"]:
+                print("  [!] SPF ends with ?all")
+
+        dkim_selectors = self.config.get("dkim_selectors", [])
+        if dkim_selectors:
+            dkim_results = self.domain.check_dkim(dkim_selectors)
+            for sel, rec in dkim_results.items():
+                if rec:
+                    print(f"  DKIM selector '{sel}' found")
+                else:
+                    print(f"  [!] DKIM selector '{sel}' missing")
+        print()
+
 
 class SSLValidator:
     """
     Handles the validation of SSL/TLS certificates for a domain.
     """
+
     def __init__(self, domain):
         self.domain = domain
 
@@ -174,21 +294,25 @@ class SSLValidator:
         """Validate and display certificate issuer and expiry."""
         try:
             context = ssl.create_default_context()
-            with socket.create_connection((self.domain, 443), timeout=REQUEST_TIMEOUT) as sock:
+            with socket.create_connection(
+                (self.domain, 443), timeout=REQUEST_TIMEOUT
+            ) as sock:
                 with context.wrap_socket(sock, server_hostname=self.domain) as ssock:
                     cert = ssock.getpeercert()
 
             issuer_parts = []
-            for part in cert.get('issuer', []):
+            for part in cert.get("issuer", []):
                 for name, value in part:
                     issuer_parts.append(f"{name}={value}")
-            issuer = ', '.join(issuer_parts) if issuer_parts else 'Unknown'
+            issuer = ", ".join(issuer_parts) if issuer_parts else "Unknown"
 
-            not_after = cert.get('notAfter')
-            expires = 'Unknown'
+            not_after = cert.get("notAfter")
+            expires = "Unknown"
             if not_after:
                 try:
-                    exp_dt = datetime.datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
+                    exp_dt = datetime.datetime.strptime(
+                        not_after, "%b %d %H:%M:%S %Y %Z"
+                    )
                     expires = exp_dt.strftime("%Y-%m-%d %H:%M:%S %Z")
                 except Exception:
                     expires = not_after
@@ -201,10 +325,12 @@ class SSLValidator:
             print(f"[-] Error validating SSL certificate for {self.domain}: {e}\n")
             return False
 
+
 class VulnerabilityScanner:
     """
     Scans for common web vulnerabilities in the domain's web services.
     """
+
     def __init__(self, domain):
         self.domain = domain
 
@@ -214,34 +340,37 @@ class VulnerabilityScanner:
         """
         # Example: Basic check for a sample vulnerability (to be expanded)
         try:
-            response = requests.get(f'http://{self.domain}', timeout=REQUEST_TIMEOUT)
-            if 'vulnerable keyword' in response.text:
+            response = requests.get(f"http://{self.domain}", timeout=REQUEST_TIMEOUT)
+            if "vulnerable keyword" in response.text:
                 print(f"[!] Potential vulnerability found in {self.domain}\n")
             else:
                 print(f"[+] No obvious vulnerabilities found in {self.domain}\n")
         except Exception as e:
             print(f"[-] Error scanning {self.domain} for vulnerabilities: {e}\n")
-            
+
+
 class ConfigManager:
     """
     Manages the application's configuration settings.
     """
+
     def __init__(self, config_file):
         self.config = configparser.ConfigParser()
         self.config.read(config_file)
 
     def get_subdomains(self, fallback=None):
         """Return a list of subdomains from config and optional wordlist."""
-        subs = self.get_setting('Subdomains', 'list', fallback=fallback or [])
-        wordlist = self.config.get('Subdomains', 'wordlist_file', fallback=None)
+        subs = self.get_setting("Subdomains", "list", fallback=fallback or [])
+        wordlist = self.config.get("Subdomains", "wordlist_file", fallback=None)
         if wordlist:
             try:
                 path = Path(wordlist)
                 if path.is_file():
-                    with path.open('r', encoding='utf-8') as fh:
+                    with path.open("r", encoding="utf-8") as fh:
                         file_subs = [
-                            ln.strip() for ln in fh
-                            if ln.strip() and not ln.startswith('#')
+                            ln.strip()
+                            for ln in fh
+                            if ln.strip() and not ln.startswith("#")
                         ]
                     subs = list(dict.fromkeys(subs + file_subs))
             except Exception as e:
@@ -264,25 +393,28 @@ class ConfigManager:
         """
         value = self.config.get(section, setting, fallback=fallback)
 
-        if setting == 'types' and (value is None or value == '' or value == fallback):
+        if setting == "types" and (value is None or value == "" or value == fallback):
             return ALL_RECORD_TYPES
 
         if isinstance(value, str):
-            if setting == 'query_delay':
+            if setting == "query_delay":
                 try:
                     return float(value)
                 except ValueError:
                     return fallback
-            if ',' in value:
-                return [v.strip() for v in value.split(',')]
-            if value.upper() == 'ALL':
+            if "," in value:
+                return [v.strip() for v in value.split(",")]
+            if value.upper() == "ALL":
                 return ALL_RECORD_TYPES
         return value
 
+
 def main():
-    parser = argparse.ArgumentParser(description='DNS Inspection Tool')
-    parser.add_argument('domain', help='The domain to inspect')
-    parser.add_argument('--config', help='Path to configuration file', default='config.ini')
+    parser = argparse.ArgumentParser(description="DNS Inspection Tool")
+    parser.add_argument("domain", help="The domain to inspect")
+    parser.add_argument(
+        "--config", help="Path to configuration file", default="config.ini"
+    )
     args = parser.parse_args()
 
     # Initialize configuration manager
@@ -290,18 +422,22 @@ def main():
 
     # Retrieve configuration settings
     dns_record_types = config_manager.get_setting(
-        'DNSRecords', 'types', fallback=ALL_RECORD_TYPES
+        "DNSRecords", "types", fallback=ALL_RECORD_TYPES
     )
     subdomains = config_manager.get_subdomains(fallback=[])
-    query_delay = config_manager.get_setting('Settings', 'query_delay', fallback=QUERY_DELAY)
+    query_delay = config_manager.get_setting(
+        "Settings", "query_delay", fallback=QUERY_DELAY
+    )
+    dkim_selectors = config_manager.get_setting("DKIM", "selectors", fallback=[])
 
     # Initialize Inspector with domain and configuration
     inspector = Inspector(
         args.domain,
         {
-            'dns_record_types': dns_record_types,
-            'subdomains': subdomains,
-            'query_delay': query_delay,
+            "dns_record_types": dns_record_types,
+            "subdomains": subdomains,
+            "query_delay": query_delay,
+            "dkim_selectors": dkim_selectors,
         },
     )
 
@@ -315,12 +451,12 @@ def main():
     vulnerability_scanner = VulnerabilityScanner(args.domain)
     vulnerability_scanner.scan_for_vulnerabilities()
 
+
 def print_banner(text):
     banner = pyfiglet.figlet_format(text)
     print(banner)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     print_banner("DNS INSPECTAH")
     main()
-
-
