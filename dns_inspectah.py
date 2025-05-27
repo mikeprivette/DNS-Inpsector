@@ -405,7 +405,9 @@ class ConfigManager:
         Returns:
             The value of the setting, or the fallback value if not found. If the
             retrieved value is a comma separated string it will be returned as a
-            list of stripped items.
+            list of stripped items. When requesting the ``selectors`` option or
+            when the provided fallback is a list, a single value will also be
+            wrapped in a list.
         """
         value = self.config.get(section, setting, fallback=fallback)
 
@@ -422,6 +424,11 @@ class ConfigManager:
                 return [v.strip() for v in value.split(",")]
             if value.upper() == "ALL":
                 return ALL_RECORD_TYPES
+            if setting == "selectors" or isinstance(fallback, list):
+                return [value.strip()]
+
+        if isinstance(value, list):
+            return value
         return value
 
 
