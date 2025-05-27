@@ -10,6 +10,7 @@ import argparse
 import pyfiglet
 import time
 import datetime
+from pathlib import Path
 
 ALL_RECORD_TYPES = [rdatatype.to_text(t) for t in rdatatype.RdataType]
 
@@ -229,6 +230,24 @@ class ConfigManager:
         self.config = configparser.ConfigParser()
         self.config.read(config_file)
 
+    def get_subdomains(self, fallback=None):
+        """Return a list of subdomains from config and optional wordlist."""
+        subs = self.get_setting('Subdomains', 'list', fallback=fallback or [])
+        wordlist = self.config.get('Subdomains', 'wordlist_file', fallback=None)
+        if wordlist:
+            try:
+                path = Path(wordlist)
+                if path.is_file():
+                    with path.open('r', encoding='utf-8') as fh:
+                        file_subs = [
+                            ln.strip() for ln in fh
+                            if ln.strip() and not ln.startswith('#')
+                        ]
+                    subs = list(dict.fromkeys(subs + file_subs))
+            except Exception as e:
+                print(f"Error reading subdomain wordlist {wordlist}: {e}")
+        return subs
+
     def get_setting(self, section, setting, fallback=None):
         """
         Retrieves a specific setting from the configuration.
@@ -273,7 +292,7 @@ def main():
     dns_record_types = config_manager.get_setting(
         'DNSRecords', 'types', fallback=ALL_RECORD_TYPES
     )
-    subdomains = config_manager.get_setting('Subdomains', 'list', fallback=[])
+    subdomains = config_manager.get_subdomains(fallback=[])
     query_delay = config_manager.get_setting('Settings', 'query_delay', fallback=QUERY_DELAY)
 
     # Initialize Inspector with domain and configuration
