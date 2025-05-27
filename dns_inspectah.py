@@ -174,7 +174,7 @@ class SSLValidator:
         """Validate and display certificate issuer and expiry."""
         try:
             context = ssl.create_default_context()
-            with socket.create_connection((self.domain, 443)) as sock:
+            with socket.create_connection((self.domain, 443), timeout=REQUEST_TIMEOUT) as sock:
                 with context.wrap_socket(sock, server_hostname=self.domain) as ssock:
                     cert = ssock.getpeercert()
 
