@@ -48,7 +48,8 @@ You can also adjust the delay between DNS queries by setting `query_delay` under
 the `[Settings]` section of `config.ini`.
 
 DKIM selectors to probe can be specified in the `[DKIM]` section using the
-`selectors` option. Provide multiple selectors as a comma-separated list.
+`selectors` option. A single selector may be given or multiple selectors can be
+provided as a comma-separated list.
 
 To perform a more thorough subdomain search, specify a wordlist file with the
 `wordlist_file` option under `[Subdomains]`. Each line in the file should
