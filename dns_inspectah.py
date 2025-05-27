@@ -27,6 +27,7 @@ class Domain:
     """
 
     def __init__(self, name, query_delay=QUERY_DELAY):
+        """Store the domain `name` and DNS `query_delay`."""
         self.name = name
         self.query_delay = query_delay
 
@@ -201,6 +202,7 @@ class Inspector:
     """
 
     def __init__(self, domain, config):
+        """Create a Domain for `domain` and retain `config` settings."""
         self.domain = Domain(domain, query_delay=config.get("query_delay", QUERY_DELAY))
         self.config = config  # Configuration settings
 
@@ -299,6 +301,7 @@ class SSLValidator:
     """
 
     def __init__(self, domain):
+        """Save the domain to validate its SSL certificate."""
         self.domain = domain
 
     def validate_certificate(self):
@@ -343,6 +346,7 @@ class VulnerabilityScanner:
     """
 
     def __init__(self, domain):
+        """Store the domain to scan for vulnerabilities."""
         self.domain = domain
 
     def scan_for_vulnerabilities(self):
@@ -366,6 +370,7 @@ class ConfigManager:
     """
 
     def __init__(self, config_file):
+        """Load configuration from the given `config_file`."""
         self.config = configparser.ConfigParser()
         self.config.read(config_file)
 
