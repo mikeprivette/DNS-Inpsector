@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import dns.resolver
+import dns.query
+import dns.zone
 from dns import rdatatype
 import ssl
 import socket
@@ -116,6 +118,25 @@ class Domain:
                 continue
         return discovered
 
+    def attempt_zone_transfer(self):
+        """Attempt DNS zone transfer (AXFR) from domain nameservers."""
+        subdomains = []
+        ns_records, _ = self.get_dns_records("NS")
+        for ns in ns_records:
+            try:
+                time.sleep(self.query_delay)
+                xfr = dns.query.xfr(ns, self.name, lifetime=5)
+                zone = dns.zone.from_xfr(xfr)
+                for name in zone.nodes.keys():
+                    if str(name) == "@":
+                        sub = self.name
+                    else:
+                        sub = f"{name}.{self.name}"
+                    subdomains.append(sub.rstrip("."))
+            except Exception as e:
+                print(f"    [-] AXFR failed for {ns}: {e}")
+        return list(dict.fromkeys(subdomains))
+
     def get_txt_record(self, name):
         """Retrieve TXT records for an arbitrary name."""
         try:
@@ -219,18 +240,26 @@ class Inspector:
         else:
             print("    [ ] No wildcard DNS records found.\n")
 
-        subdomain_count = 0
+        subdomains = []
         if self.config.get("subdomains"):
             print("[*] Enumerating subdomains...")
             found_subs = self.domain.enumerate_subdomains(self.config["subdomains"])
-            subdomain_count = len(found_subs)
-            if found_subs:
-                print("    Discovered subdomains:")
-                for sub in found_subs:
-                    print(f"    - {sub}")
-                print()
-            else:
-                print("    No subdomains found.\n")
+            subdomains.extend(found_subs)
+        if self.config.get("zone_transfer"):
+            print("[*] Attempting zone transfer...")
+            axfr_subs = self.domain.attempt_zone_transfer()
+            subdomains.extend(axfr_subs)
+            if not axfr_subs:
+                print("    Zone transfer failed or no records found.\n")
+
+        subdomain_count = len(set(subdomains))
+        if subdomains:
+            print("    Discovered subdomains:")
+            for sub in sorted(set(subdomains)):
+                print(f"    - {sub}")
+            print()
+        elif self.config.get("subdomains") or self.config.get("zone_transfer"):
+            print("    No subdomains found.\n")
 
         print("[*] Gathering DNS records...\n")
         meta_errors = []
@@ -257,7 +286,7 @@ class Inspector:
             print("[*] Summary:")
             for rtype, count in record_counts.items():
                 print(f"  {rtype}: {count} record(s)")
-            if self.config.get("subdomains"):
+            if self.config.get("subdomains") or self.config.get("zone_transfer"):
                 print(f"  Subdomains found: {subdomain_count}\n")
 
         print("[*] Checking email authentication records...")
@@ -415,6 +444,8 @@ class ConfigManager:
             return ALL_RECORD_TYPES
 
         if isinstance(value, str):
+            if isinstance(fallback, bool):
+                return value.strip().lower() in ("true", "yes", "1")
             if setting == "query_delay":
                 try:
                     return float(value)
@@ -452,6 +483,9 @@ def main():
         "Settings", "query_delay", fallback=QUERY_DELAY
     )
     dkim_selectors = config_manager.get_setting("DKIM", "selectors", fallback=[])
+    zone_transfer = config_manager.get_setting(
+        "ZoneTransfer", "enabled", fallback=False
+    )
 
     # Initialize Inspector with domain and configuration
     inspector = Inspector(
@@ -461,6 +495,7 @@ def main():
             "subdomains": subdomains,
             "query_delay": query_delay,
             "dkim_selectors": dkim_selectors,
+            "zone_transfer": zone_transfer,
         },
     )
 

@@ -45,3 +45,18 @@ office
 intranet
 login
 auth
+
+# Additional common subdomains
+data
+backup
+old
+archive
+cdn
+static1
+static2
+images
+downloads
+logs
+api2
+dev1
+dev2

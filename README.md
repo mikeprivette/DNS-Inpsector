@@ -15,6 +15,7 @@ A comprehensive Python script to analyze DNS records for a given domain. This to
 - Optionally enumerates common subdomains defined in `config.ini`
 - Supports loading an extended subdomain wordlist via `wordlist_file`
 - Checks DMARC, SPF and DKIM records for common issues
+- Can attempt a DNS zone transfer when enabled in `config.ini`
 
 ## Installation
 
@@ -54,6 +55,9 @@ provided as a comma-separated list.
 To perform a more thorough subdomain search, specify a wordlist file with the
 `wordlist_file` option under `[Subdomains]`. Each line in the file should
 contain a subdomain prefix.
+
+Enable DNS zone transfers by setting `enabled = true` under `[ZoneTransfer]` in
+`config.ini`.
 
 DMARC, SPF and DKIM checks are performed automatically and any issues are
 highlighted in the output.
