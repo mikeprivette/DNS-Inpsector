@@ -12,6 +12,7 @@ A comprehensive Python script to analyze DNS records for a given domain. This to
 - Allows configuration of the delay between DNS queries
 - Validates SSL/TLS certificates for the target domain
 - Performs a basic vulnerability scan of accessible web services
+- Displays colorized output using `rich` with tables for records and summaries
 - Optionally enumerates common subdomains defined in `config.ini`
 - Supports loading an extended subdomain wordlist via `wordlist_file`
 - Checks DMARC, SPF and DKIM records for common issues
@@ -33,6 +34,8 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
+The `rich` library is included in the requirements to provide colorful tables
+and messages in the console.
 
 ## Usage
 
@@ -64,6 +67,16 @@ highlighted in the output.
 
 The script will display DNS records and a brief summary of the findings.
 The summary includes totals for each record type and how many subdomains were discovered.
+The output is colorized with `rich`, providing easy-to-read tables like the example below:
+
+```text
+┏━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Record Type ┃ Value                        ┃
+┡━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ A           │ 93.184.216.34               │
+│ MX          │ 10 mail.example.com.        │
+└─────────────┴──────────────────────────────┘
+```
 
 ## Contributing
 

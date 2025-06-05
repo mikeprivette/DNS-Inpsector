@@ -13,6 +13,10 @@ import pyfiglet
 import time
 import datetime
 from pathlib import Path
+from rich.console import Console
+from rich.table import Table
+
+console = Console()
 
 ALL_RECORD_TYPES = [rdatatype.to_text(t) for t in rdatatype.RdataType]
 
@@ -231,97 +235,103 @@ class Inspector:
         """
         Perform the inspection process for the domain.
         """
-        print(f"\n[*] Inspecting domain: {self.domain.name}\n")
+        console.print(f"\n[bold]* Inspecting domain: {self.domain.name}[/bold]\n")
 
         # Check for wildcard DNS records across all configured types
-        print("[*] Checking for wildcard DNS records...")
+        console.print("[*] Checking for wildcard DNS records...")
         if self.domain.check_wildcard_records(self.config["dns_record_types"]):
-            print("    [!] Wildcard DNS records found.\n")
+            console.print("    [bold red][!] Wildcard DNS records found.[/bold red]\n")
         else:
-            print("    [ ] No wildcard DNS records found.\n")
+            console.print("    [green][ ] No wildcard DNS records found.[/green]\n")
 
         subdomains = []
         if self.config.get("subdomains"):
-            print("[*] Enumerating subdomains...")
+            console.print("[*] Enumerating subdomains...")
             found_subs = self.domain.enumerate_subdomains(self.config["subdomains"])
             subdomains.extend(found_subs)
         if self.config.get("zone_transfer"):
-            print("[*] Attempting zone transfer...")
+            console.print("[*] Attempting zone transfer...")
             axfr_subs = self.domain.attempt_zone_transfer()
             subdomains.extend(axfr_subs)
             if not axfr_subs:
-                print("    Zone transfer failed or no records found.\n")
+                console.print("    Zone transfer failed or no records found.\n")
 
         subdomain_count = len(set(subdomains))
         if subdomains:
-            print("    Discovered subdomains:")
+            table = Table(title="Discovered subdomains")
+            table.add_column("Subdomain", style="cyan")
             for sub in sorted(set(subdomains)):
-                print(f"    - {sub}")
-            print()
+                table.add_row(sub)
+            console.print(table)
         elif self.config.get("subdomains") or self.config.get("zone_transfer"):
-            print("    No subdomains found.\n")
+            console.print("    No subdomains found.\n")
 
-        print("[*] Gathering DNS records...\n")
+        console.print("[*] Gathering DNS records...\n")
         meta_errors = []
         record_counts = {}
+        record_table = Table(title="DNS Records")
+        record_table.add_column("Type", style="green")
+        record_table.add_column("Value", style="magenta")
         for record_type in self.config["dns_record_types"]:
             records, meta_error = self.domain.get_dns_records(record_type)
             if meta_error:
                 meta_errors.append(record_type)
                 continue
             record_counts[record_type] = len(records)
-            if records:
-                print(f"{record_type} records:")
-                for record in records:
-                    print(f"  - {record}")
-                print()
-            else:
-                continue
+            for record in records:
+                record_table.add_row(record_type, record)
+        if record_table.row_count:
+            console.print(record_table)
         if meta_errors:
-            print(
-                "DNS metaqueries are not allowed for: " + ", ".join(meta_errors) + "\n"
+            console.print(
+                f"[yellow]DNS metaqueries are not allowed for: {', '.join(meta_errors)}[/yellow]\n"
             )
 
         if record_counts or subdomain_count:
-            print("[*] Summary:")
+            summary = Table(title="Summary")
+            summary.add_column("Record Type", style="green")
+            summary.add_column("Count", style="magenta")
             for rtype, count in record_counts.items():
-                print(f"  {rtype}: {count} record(s)")
+                summary.add_row(rtype, str(count))
             if self.config.get("subdomains") or self.config.get("zone_transfer"):
-                print(f"  Subdomains found: {subdomain_count}\n")
+                summary.add_row("Subdomains found", str(subdomain_count))
+            console.print(summary)
 
-        print("[*] Checking email authentication records...")
+        console.print("[*] Checking email authentication records...")
         dmarc = self.domain.check_dmarc()
         if not dmarc["present"]:
-            print("  [!] No DMARC record found.")
+            console.print("  [bold red]! No DMARC record found.[/bold red]")
         else:
-            print(f"  DMARC policy: {dmarc['policy']}")
+            console.print(f"  DMARC policy: {dmarc['policy']}")
             if dmarc["policy"] == "none":
-                print("  [!] DMARC policy set to none")
+                console.print("  [bold yellow]! DMARC policy set to none[/bold yellow]")
             if dmarc["rua"]:
-                print(f"  RUA: {dmarc['rua']}")
+                console.print(f"  RUA: {dmarc['rua']}")
             if dmarc["ruf"]:
-                print(f"  RUF: {dmarc['ruf']}")
+                console.print(f"  RUF: {dmarc['ruf']}")
 
         spf = self.domain.check_spf()
         if not spf["records"]:
-            print("  [!] No SPF record found.")
+            console.print("  [bold red]! No SPF record found.[/bold red]")
         else:
             for rec in spf["records"]:
-                print(f"  SPF: {rec}")
+                console.print(f"  SPF: {rec}")
             if spf["soft"]:
-                print("  [!] SPF ends with ~all")
+                console.print("  [bold yellow]! SPF ends with ~all[/bold yellow]")
             if spf["neutral"]:
-                print("  [!] SPF ends with ?all")
+                console.print("  [bold yellow]! SPF ends with ?all[/bold yellow]")
 
         dkim_selectors = self.config.get("dkim_selectors", [])
         if dkim_selectors:
             dkim_results = self.domain.check_dkim(dkim_selectors)
             for sel, rec in dkim_results.items():
                 if rec:
-                    print(f"  DKIM selector '{sel}' found")
+                    console.print(f"  DKIM selector '{sel}' found")
                 else:
-                    print(f"  [!] DKIM selector '{sel}' missing")
-        print()
+                    console.print(
+                        f"  [bold red]! DKIM selector '{sel}' missing[/bold red]"
+                    )
+        console.print()
 
 
 class SSLValidator:
@@ -360,12 +370,20 @@ class SSLValidator:
                 except Exception:
                     expires = not_after
 
-            print(f"[+] Valid SSL certificate for {self.domain}")
-            print(f"    Issuer: {issuer}")
-            print(f"    Expires: {expires}\n")
+            console.print(f"[+] Valid SSL certificate for {self.domain}")
+            cert_table = Table(show_header=False)
+            cert_table.add_column("Field", style="cyan")
+            cert_table.add_column("Value", style="magenta")
+            cert_table.add_row("Issuer", issuer)
+            cert_table.add_row("Expires", expires)
+            console.print(cert_table)
+            console.print()
             return True
         except Exception as e:
-            print(f"[-] Error validating SSL certificate for {self.domain}: {e}\n")
+            console.print(
+                f"[-] Error validating SSL certificate for {self.domain}: {e}\n",
+                style="red",
+            )
             return False
 
 
@@ -386,11 +404,18 @@ class VulnerabilityScanner:
         try:
             response = requests.get(f"http://{self.domain}", timeout=REQUEST_TIMEOUT)
             if "vulnerable keyword" in response.text:
-                print(f"[!] Potential vulnerability found in {self.domain}\n")
+                console.print(
+                    f"[bold red][!] Potential vulnerability found in {self.domain}[/bold red]\n"
+                )
             else:
-                print(f"[+] No obvious vulnerabilities found in {self.domain}\n")
+                console.print(
+                    f"[green][+] No obvious vulnerabilities found in {self.domain}[/green]\n"
+                )
         except Exception as e:
-            print(f"[-] Error scanning {self.domain} for vulnerabilities: {e}\n")
+            console.print(
+                f"[-] Error scanning {self.domain} for vulnerabilities: {e}\n",
+                style="red",
+            )
 
 
 class ConfigManager:
@@ -512,7 +537,7 @@ def main():
 
 def print_banner(text):
     banner = pyfiglet.figlet_format(text)
-    print(banner)
+    console.print(f"[bold green]{banner}[/bold green]")
 
 
 if __name__ == "__main__":
