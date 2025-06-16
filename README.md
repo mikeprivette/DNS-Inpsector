@@ -15,6 +15,7 @@ A comprehensive Python script to analyze DNS records for a given domain. This to
 - Displays colorized output using `rich` with tables for records and summaries
 - Optionally enumerates common subdomains defined in `config.ini`
 - Supports loading an extended subdomain wordlist via `wordlist_file`
+- Pulls additional subdomains from certificate transparency logs when `ct_logs` is enabled
 - Checks DMARC, SPF and DKIM records for common issues
 - Can attempt a DNS zone transfer when enabled in `config.ini`
 
@@ -45,6 +46,8 @@ With the virtual environment activated, execute the script with the target domai
 python dns_inspectah.py example.com
 ```
 
+Add `--output-json results.json` to save the findings to a file.
+
 By default the tool queries all DNS record types discovered from `dnspython`.
 You can limit or extend the list by editing the `types` entry in `config.ini`.
 
@@ -61,6 +64,9 @@ contain a subdomain prefix.
 
 Enable DNS zone transfers by setting `enabled = true` under `[ZoneTransfer]` in
 `config.ini`.
+
+Set `ct_logs = true` under `[Subdomains]` to pull additional subdomains from
+certificate transparency logs.
 
 DMARC, SPF and DKIM checks are performed automatically and any issues are
 highlighted in the output.
