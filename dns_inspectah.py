@@ -12,6 +12,7 @@ import argparse
 import pyfiglet
 import time
 import datetime
+import json
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
@@ -141,6 +142,24 @@ class Domain:
                 print(f"    [-] AXFR failed for {ns}: {e}")
         return list(dict.fromkeys(subdomains))
 
+    def enumerate_ct_subdomains(self):
+        """Retrieve subdomains from certificate transparency logs."""
+        url = f"https://crt.sh/?q=%25.{self.name}&output=json"
+        discovered = []
+        try:
+            resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+            if resp.status_code == 200:
+                for entry in resp.json():
+                    value = entry.get("name_value", "")
+                    for sub in value.split("\n"):
+                        sub = sub.strip()
+                        if sub.endswith(self.name) and sub != self.name:
+                            discovered.append(sub)
+            return list(dict.fromkeys(discovered))
+        except Exception as exc:
+            print(f"Error retrieving CT log data: {exc}")
+            return []
+
     def get_txt_record(self, name):
         """Retrieve TXT records for an arbitrary name."""
         try:
@@ -236,10 +255,13 @@ class Inspector:
         Perform the inspection process for the domain.
         """
         console.print(f"\n[bold]* Inspecting domain: {self.domain.name}[/bold]\n")
+        results = {"domain": self.domain.name}
 
         # Check for wildcard DNS records across all configured types
         console.print("[*] Checking for wildcard DNS records...")
-        if self.domain.check_wildcard_records(self.config["dns_record_types"]):
+        wildcard = self.domain.check_wildcard_records(self.config["dns_record_types"])
+        results["wildcard"] = wildcard
+        if wildcard:
             console.print("    [bold red][!] Wildcard DNS records found.[/bold red]\n")
         else:
             console.print("    [green][ ] No wildcard DNS records found.[/green]\n")
@@ -249,6 +271,12 @@ class Inspector:
             console.print("[*] Enumerating subdomains...")
             found_subs = self.domain.enumerate_subdomains(self.config["subdomains"])
             subdomains.extend(found_subs)
+        if self.config.get("ct_logs"):
+            console.print(
+                "[*] Pulling subdomains from certificate transparency logs..."
+            )
+            ct_subs = self.domain.enumerate_ct_subdomains()
+            subdomains.extend(ct_subs)
         if self.config.get("zone_transfer"):
             console.print("[*] Attempting zone transfer...")
             axfr_subs = self.domain.attempt_zone_transfer()
@@ -257,6 +285,7 @@ class Inspector:
                 console.print("    Zone transfer failed or no records found.\n")
 
         subdomain_count = len(set(subdomains))
+        results["subdomains"] = sorted(set(subdomains))
         if subdomains:
             table = Table(title="Discovered subdomains")
             table.add_column("Subdomain", style="cyan")
@@ -269,6 +298,7 @@ class Inspector:
         console.print("[*] Gathering DNS records...\n")
         meta_errors = []
         record_counts = {}
+        dns_records = {}
         record_table = Table(title="DNS Records")
         record_table.add_column("Type", style="green")
         record_table.add_column("Value", style="magenta")
@@ -278,6 +308,7 @@ class Inspector:
                 meta_errors.append(record_type)
                 continue
             record_counts[record_type] = len(records)
+            dns_records[record_type] = records
             for record in records:
                 record_table.add_row(record_type, record)
         if record_table.row_count:
@@ -287,6 +318,8 @@ class Inspector:
                 f"[yellow]DNS metaqueries are not allowed for: {', '.join(meta_errors)}[/yellow]\n"
             )
 
+        results["dns_records"] = dns_records
+        results["meta_errors"] = meta_errors
         if record_counts or subdomain_count:
             summary = Table(title="Summary")
             summary.add_column("Record Type", style="green")
@@ -299,6 +332,7 @@ class Inspector:
 
         console.print("[*] Checking email authentication records...")
         dmarc = self.domain.check_dmarc()
+        results["dmarc"] = dmarc
         if not dmarc["present"]:
             console.print("  [bold red]! No DMARC record found.[/bold red]")
         else:
@@ -311,6 +345,7 @@ class Inspector:
                 console.print(f"  RUF: {dmarc['ruf']}")
 
         spf = self.domain.check_spf()
+        results["spf"] = spf
         if not spf["records"]:
             console.print("  [bold red]! No SPF record found.[/bold red]")
         else:
@@ -322,6 +357,7 @@ class Inspector:
                 console.print("  [bold yellow]! SPF ends with ?all[/bold yellow]")
 
         dkim_selectors = self.config.get("dkim_selectors", [])
+        dkim_results = {}
         if dkim_selectors:
             dkim_results = self.domain.check_dkim(dkim_selectors)
             for sel, rec in dkim_results.items():
@@ -331,7 +367,9 @@ class Inspector:
                     console.print(
                         f"  [bold red]! DKIM selector '{sel}' missing[/bold red]"
                     )
+        results["dkim"] = dkim_results
         console.print()
+        return results
 
 
 class SSLValidator:
@@ -378,13 +416,13 @@ class SSLValidator:
             cert_table.add_row("Expires", expires)
             console.print(cert_table)
             console.print()
-            return True
+            return {"valid": True, "issuer": issuer, "expires": expires}
         except Exception as e:
             console.print(
                 f"[-] Error validating SSL certificate for {self.domain}: {e}\n",
                 style="red",
             )
-            return False
+            return {"valid": False, "error": str(e)}
 
 
 class VulnerabilityScanner:
@@ -407,15 +445,18 @@ class VulnerabilityScanner:
                 console.print(
                     f"[bold red][!] Potential vulnerability found in {self.domain}[/bold red]\n"
                 )
+                return {"vulnerable": True}
             else:
                 console.print(
                     f"[green][+] No obvious vulnerabilities found in {self.domain}[/green]\n"
                 )
+                return {"vulnerable": False}
         except Exception as e:
             console.print(
                 f"[-] Error scanning {self.domain} for vulnerabilities: {e}\n",
                 style="red",
             )
+            return {"error": str(e)}
 
 
 class ConfigManager:
@@ -494,6 +535,9 @@ def main():
     parser.add_argument(
         "--config", help="Path to configuration file", default="config.ini"
     )
+    parser.add_argument(
+        "--output-json", help="Write results to the given JSON file", default=None
+    )
     args = parser.parse_args()
 
     # Initialize configuration manager
@@ -511,6 +555,7 @@ def main():
     zone_transfer = config_manager.get_setting(
         "ZoneTransfer", "enabled", fallback=False
     )
+    ct_logs = config_manager.get_setting("Subdomains", "ct_logs", fallback=False)
 
     # Initialize Inspector with domain and configuration
     inspector = Inspector(
@@ -521,18 +566,24 @@ def main():
             "query_delay": query_delay,
             "dkim_selectors": dkim_selectors,
             "zone_transfer": zone_transfer,
+            "ct_logs": ct_logs,
         },
     )
 
     # Perform the inspection
-    inspector.inspect()
+    results = inspector.inspect()
 
     # Initialize and use SSLValidator and VulnerabilityScanner if needed
     ssl_validator = SSLValidator(args.domain)
-    ssl_validator.validate_certificate()
+    results["ssl"] = ssl_validator.validate_certificate()
 
     vulnerability_scanner = VulnerabilityScanner(args.domain)
-    vulnerability_scanner.scan_for_vulnerabilities()
+    results["vulnerabilities"] = vulnerability_scanner.scan_for_vulnerabilities()
+
+    if args.output_json:
+        with open(args.output_json, "w", encoding="utf-8") as fh:
+            json.dump(results, fh, indent=2)
+        console.print(f"[green]Results written to {args.output_json}[/green]")
 
 
 def print_banner(text):
