@@ -754,6 +754,11 @@ class ConfigManager:
                     return float(value)
                 except ValueError:
                     return fallback
+            if setting == "max_workers":
+                try:
+                    return int(value)
+                except ValueError:
+                    return fallback
             if "," in value:
                 return [v.strip() for v in value.split(",")]
             if value.upper() == "ALL":
