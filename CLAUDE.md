@@ -83,7 +83,11 @@ python3 dns_inspectah.py example.com
 1. **Rate Limiting**: All DNS queries respect configurable delays to avoid overwhelming servers
 2. **Wildcard Detection**: Automatically detects wildcard DNS configurations across all record types
 3. **Zone Transfer Attempts**: Can attempt AXFR transfers when enabled in config
-4. **Subdomain Discovery**: Combines config-based lists with external wordlist files
+4. **Advanced Subdomain Discovery**: 
+   - Threading with configurable worker count for parallel DNS queries
+   - Recursive enumeration with automatic permutation generation
+   - Multiple data sources: wordlists, CT logs, DNSDumpster, alternate DNS servers
+   - Smart deduplication and validation
 5. **SSL Validation**: Checks certificate validity and expiration dates
 6. **Error Handling**: Comprehensive exception handling for network operations
 
@@ -105,4 +109,14 @@ Set custom wordlist:
 ```ini
 [Subdomains]
 wordlist_file = custom_subdomains.txt
+```
+
+Enable advanced subdomain discovery:
+```ini
+[Subdomains]
+ct_logs = true
+dns_dumpster = true
+alternate_dns = true
+max_workers = 20
+recursive = true
 ```

@@ -13,9 +13,13 @@ import pyfiglet
 import time
 import datetime
 import json
+import threading
+import itertools
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
+from rich.progress import Progress, TaskID
 
 console = Console()
 
@@ -97,31 +101,69 @@ class Domain:
             print(f"Error checking wildcard records for {self.name}: {e}")
             return False
 
-    def enumerate_subdomains(self, subdomains):
+    def enumerate_subdomains(self, subdomains, max_workers=10, recursive=True):
         """
-        Attempt to resolve a list of subdomains for the domain.
+        Attempt to resolve a list of subdomains for the domain with threading and recursion.
 
         Args:
             subdomains (list): Subdomain prefixes to check.
+            max_workers (int): Maximum number of concurrent threads.
+            recursive (bool): Whether to perform recursive subdomain discovery.
 
         Returns:
             list: Fully qualified subdomains that resolve successfully.
         """
-        discovered = []
-        for sub in subdomains:
+        discovered = set()
+        lock = threading.Lock()
+        
+        def check_subdomain(sub):
             fqdn = f"{sub}.{self.name}"
             try:
                 time.sleep(self.query_delay)
                 dns.resolver.resolve(fqdn, "A")
-                discovered.append(fqdn)
+                with lock:
+                    discovered.add(fqdn)
+                    if recursive:
+                        # Generate common permutations for recursive discovery
+                        permutations = self._generate_permutations(sub)
+                        return fqdn, permutations
+                return fqdn, []
             except (
                 dns.resolver.NoAnswer,
                 dns.resolver.NXDOMAIN,
                 dns.resolver.NoNameservers,
                 dns.resolver.LifetimeTimeout,
             ):
-                continue
-        return discovered
+                return None, []
+        
+        # Initial subdomain enumeration
+        with Progress() as progress:
+            task = progress.add_task("[cyan]Enumerating subdomains...", total=len(subdomains))
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_subdomain = {executor.submit(check_subdomain, sub): sub for sub in subdomains}
+                recursive_subs = set()
+                
+                for future in as_completed(future_to_subdomain):
+                    result, perms = future.result()
+                    if result and recursive:
+                        recursive_subs.update(perms)
+                    progress.advance(task)
+        
+        # Recursive enumeration on discovered subdomains
+        if recursive and recursive_subs:
+            console.print(f"[*] Found {len(discovered)} subdomains, checking {len(recursive_subs)} permutations...")
+            with Progress() as progress:
+                task = progress.add_task("[cyan]Recursive enumeration...", total=len(recursive_subs))
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_subdomain = {executor.submit(check_subdomain, sub): sub for sub in recursive_subs}
+                    
+                    for future in as_completed(future_to_subdomain):
+                        future.result()
+                        progress.advance(task)
+        
+        return list(discovered)
 
     def attempt_zone_transfer(self):
         """Attempt DNS zone transfer (AXFR) from domain nameservers."""
@@ -141,24 +183,202 @@ class Domain:
             except Exception as e:
                 print(f"    [-] AXFR failed for {ns}: {e}")
         return list(dict.fromkeys(subdomains))
+    
+    def _generate_permutations(self, subdomain):
+        """
+        Generate common subdomain permutations for recursive discovery.
+        
+        Args:
+            subdomain (str): Base subdomain to generate permutations for.
+            
+        Returns:
+            list: List of subdomain permutations.
+        """
+        common_prefixes = ['dev', 'test', 'staging', 'prod', 'admin', 'api', 'cdn', 'www']
+        common_suffixes = ['1', '2', '01', '02', 'new', 'old', 'backup', 'temp']
+        separators = ['-', '_', '']
+        
+        permutations = set()
+        
+        # Add prefixes
+        for prefix in common_prefixes:
+            for sep in separators:
+                if sep:
+                    permutations.add(f"{prefix}{sep}{subdomain}")
+                else:
+                    permutations.add(f"{prefix}{subdomain}")
+        
+        # Add suffixes  
+        for suffix in common_suffixes:
+            for sep in separators:
+                if sep:
+                    permutations.add(f"{subdomain}{sep}{suffix}")
+                else:
+                    permutations.add(f"{subdomain}{suffix}")
+        
+        # Add common combinations
+        if len(subdomain.split('-')) == 1 and len(subdomain.split('_')) == 1:
+            # Single word subdomains - try with common separators
+            for word in ['app', 'web', 'mail', 'ftp', 'admin']:
+                for sep in ['-', '_']:
+                    permutations.add(f"{subdomain}{sep}{word}")
+                    permutations.add(f"{word}{sep}{subdomain}")
+        
+        return list(permutations)[:50]  # Limit to prevent explosion
 
     def enumerate_ct_subdomains(self):
-        """Retrieve subdomains from certificate transparency logs."""
-        url = f"https://crt.sh/?q=%25.{self.name}&output=json"
-        discovered = []
+        """Retrieve subdomains from multiple certificate transparency logs."""
+        discovered = set()
+        
+        # Multiple CT log sources for better coverage
+        sources = [
+            f"https://crt.sh/?q=%25.{self.name}&output=json",
+            f"https://api.certspotter.com/v1/issuances?domain={self.name}&include_subdomains=true&expand=dns_names"
+        ]
+        
+        for url in sources:
+            try:
+                console.print(f"[*] Querying CT logs: {url.split('//')[1].split('/')[0]}...")
+                resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+                if resp.status_code == 200:
+                    if 'crt.sh' in url:
+                        # Handle crt.sh format
+                        for entry in resp.json():
+                            value = entry.get("name_value", "")
+                            for sub in value.split("\n"):
+                                sub = sub.strip().lower()
+                                # Clean up wildcard entries and validate
+                                if sub.startswith('*.'):
+                                    sub = sub[2:]
+                                if (sub.endswith(self.name) and sub != self.name and 
+                                    not any(c in sub for c in ['*', ' ', '\t'])):
+                                    discovered.add(sub)
+                    
+                    elif 'certspotter' in url:
+                        # Handle certspotter format
+                        for entry in resp.json():
+                            dns_names = entry.get("dns_names", [])
+                            for name in dns_names:
+                                name = name.strip().lower()
+                                if name.startswith('*.'):
+                                    name = name[2:]
+                                if (name.endswith(self.name) and name != self.name and
+                                    not any(c in name for c in ['*', ' ', '\t'])):
+                                    discovered.add(name)
+                        
+            except Exception as exc:
+                console.print(f"[yellow]Warning: CT log query failed for {url.split('//')[1].split('/')[0]}: {exc}[/yellow]")
+                continue
+        
+        return list(discovered)
+    
+    def enumerate_dns_dumpster(self):
+        """Retrieve subdomains from DNSDumpster API."""
         try:
-            resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+            session = requests.Session()
+            url = 'https://dnsdumpster.com/'
+            
+            # Get CSRF token
+            resp = session.get(url, timeout=REQUEST_TIMEOUT)
+            if resp.status_code != 200:
+                return []
+            
+            # Extract CSRF token from response
+            csrf_token = None
+            for line in resp.text.split('\n'):
+                if 'csrfmiddlewaretoken' in line:
+                    csrf_token = line.split('value="')[1].split('"')[0]
+                    break
+            
+            if not csrf_token:
+                return []
+            
+            # Submit domain search
+            data = {
+                'csrfmiddlewaretoken': csrf_token,
+                'targetip': self.name
+            }
+            
+            headers = {
+                'Referer': url,
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
+            }
+            
+            resp = session.post(url, data=data, headers=headers, timeout=REQUEST_TIMEOUT)
+            
             if resp.status_code == 200:
-                for entry in resp.json():
-                    value = entry.get("name_value", "")
-                    for sub in value.split("\n"):
-                        sub = sub.strip()
-                        if sub.endswith(self.name) and sub != self.name:
-                            discovered.append(sub)
-            return list(dict.fromkeys(discovered))
+                # Parse HTML response to extract domains
+                discovered = set()
+                lines = resp.text.split('\n')
+                for line in lines:
+                    if self.name in line and ('http://' in line or 'https://' in line):
+                        # Extract subdomain from HTML
+                        for part in line.split():
+                            if self.name in part and ('http' in part or part.endswith(self.name)):
+                                clean_domain = part.replace('http://', '').replace('https://', '')
+                                clean_domain = clean_domain.split('/')[0]
+                                if clean_domain.endswith(self.name) and clean_domain != self.name:
+                                    discovered.add(clean_domain)
+                
+                return list(discovered)
+            
         except Exception as exc:
-            print(f"Error retrieving CT log data: {exc}")
-            return []
+            console.print(f"[yellow]Warning: DNSDumpster query failed: {exc}[/yellow]")
+        
+        return []
+    
+    def enumerate_alternate_dns(self, subdomains, dns_servers=None):
+        """
+        Enumerate subdomains using alternative DNS servers for better coverage.
+        
+        Args:
+            subdomains (list): Subdomain prefixes to check.
+            dns_servers (list): List of DNS servers to use.
+            
+        Returns:
+            list: Additional subdomains found using alternate DNS servers.
+        """
+        if not dns_servers:
+            dns_servers = [
+                '8.8.8.8',      # Google
+                '1.1.1.1',      # Cloudflare
+                '208.67.222.222', # OpenDNS
+                '9.9.9.9',      # Quad9
+            ]
+        
+        discovered = set()
+        
+        for dns_server in dns_servers:
+            try:
+                # Create custom resolver
+                resolver = dns.resolver.Resolver()
+                resolver.nameservers = [dns_server]
+                resolver.timeout = 3
+                resolver.lifetime = 5
+                
+                console.print(f"[*] Checking subdomains via DNS server {dns_server}...")
+                
+                for sub in subdomains[:100]:  # Limit to prevent abuse
+                    fqdn = f"{sub}.{self.name}"
+                    try:
+                        time.sleep(self.query_delay / 2)  # Faster for alternate servers
+                        resolver.resolve(fqdn, "A")
+                        discovered.add(fqdn)
+                    except (
+                        dns.resolver.NoAnswer,
+                        dns.resolver.NXDOMAIN,
+                        dns.resolver.NoNameservers,
+                        dns.resolver.LifetimeTimeout,
+                    ):
+                        continue
+                    except Exception:
+                        break  # DNS server might be rate limiting
+                        
+            except Exception as exc:
+                console.print(f"[yellow]Warning: DNS server {dns_server} failed: {exc}[/yellow]")
+                continue
+        
+        return list(discovered)
 
     def get_txt_record(self, name):
         """Retrieve TXT records for an arbitrary name."""
@@ -269,14 +489,31 @@ class Inspector:
         subdomains = []
         if self.config.get("subdomains"):
             console.print("[*] Enumerating subdomains...")
-            found_subs = self.domain.enumerate_subdomains(self.config["subdomains"])
+            found_subs = self.domain.enumerate_subdomains(
+                self.config["subdomains"], 
+                max_workers=self.config.get("max_workers", 10),
+                recursive=self.config.get("recursive", True)
+            )
             subdomains.extend(found_subs)
+            
+            # Try alternate DNS servers for additional coverage
+            if self.config.get("alternate_dns", False):
+                console.print("[*] Checking subdomains via alternate DNS servers...")
+                alt_subs = self.domain.enumerate_alternate_dns(self.config["subdomains"])
+                subdomains.extend(alt_subs)
+                
         if self.config.get("ct_logs"):
             console.print(
                 "[*] Pulling subdomains from certificate transparency logs..."
             )
             ct_subs = self.domain.enumerate_ct_subdomains()
             subdomains.extend(ct_subs)
+            
+        if self.config.get("dns_dumpster", False):
+            console.print("[*] Querying DNSDumpster for additional subdomains...")
+            dd_subs = self.domain.enumerate_dns_dumpster()
+            subdomains.extend(dd_subs)
+            
         if self.config.get("zone_transfer"):
             console.print("[*] Attempting zone transfer...")
             axfr_subs = self.domain.attempt_zone_transfer()
@@ -556,6 +793,10 @@ def main():
         "ZoneTransfer", "enabled", fallback=False
     )
     ct_logs = config_manager.get_setting("Subdomains", "ct_logs", fallback=False)
+    dns_dumpster = config_manager.get_setting("Subdomains", "dns_dumpster", fallback=False)
+    alternate_dns = config_manager.get_setting("Subdomains", "alternate_dns", fallback=False)
+    max_workers = config_manager.get_setting("Subdomains", "max_workers", fallback=10)
+    recursive = config_manager.get_setting("Subdomains", "recursive", fallback=True)
 
     # Initialize Inspector with domain and configuration
     inspector = Inspector(
@@ -567,6 +808,10 @@ def main():
             "dkim_selectors": dkim_selectors,
             "zone_transfer": zone_transfer,
             "ct_logs": ct_logs,
+            "dns_dumpster": dns_dumpster,
+            "alternate_dns": alternate_dns,
+            "max_workers": max_workers,
+            "recursive": recursive,
         },
     )
 
