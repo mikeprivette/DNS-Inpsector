@@ -445,10 +445,16 @@ class Domain:
             "neutral": neutral,
         }
 
-    def check_dkim(self, selectors, show_progress=False):
-        """Check DKIM TXT records for the provided selectors with improved error handling."""
+    def check_dkim(self, selectors, show_progress=False, rate_limit=None):
+        """Check DKIM TXT records for the provided selectors with improved error handling and rate limiting."""
+        import time
         results = {}
         valid_selectors = []
+        
+        # Apply rate limiting if specified
+        if rate_limit is None:
+            rate_limit = 10  # Default 10 queries per second
+        delay_between_queries = 1.0 / rate_limit if rate_limit > 0 else 0
         
         if show_progress and len(selectors) > 10:
             from rich.progress import Progress
@@ -466,6 +472,10 @@ class Domain:
                             break
                     results[sel] = found
                     progress.advance(task)
+                    
+                    # Rate limiting
+                    if delay_between_queries > 0:
+                        time.sleep(delay_between_queries)
         else:
             for sel in selectors:
                 name = f"{sel}._domainkey.{self.name}"
@@ -477,6 +487,10 @@ class Domain:
                         valid_selectors.append(sel)
                         break
                 results[sel] = found
+                
+                # Rate limiting
+                if delay_between_queries > 0:
+                    time.sleep(delay_between_queries)
         
         return results, valid_selectors
 
@@ -698,61 +712,56 @@ class Domain:
             return []
     
     def _get_smart_common_selectors(self):
-        """Get a smarter, more focused list of common selectors."""
+        """Get comprehensive list of common selectors based on industry research."""
         import datetime
         current_year = datetime.datetime.now().year
-        current_month = datetime.datetime.now().month
         
-        # Most common selectors (proven to work across many domains)
-        selectors = [
-            "default", "selector1", "selector2", "s1", "s2", "k1", "k2",
-            "dkim", "mail", "email", "key", "sig", "google", "microsoft"
+        # Major Email Provider Selectors (from guidance)
+        provider_selectors = [
+            # Google Workspace
+            "google", "g1", "g2",
+            # Microsoft 365
+            "selector1", "selector2", "s1", "s2",
+            # MailChimp/Mandrill
+            "k1", "k2", "k3",
+            # Constant Contact
+            "ctct1", "ctct2",
+            # SendGrid
+            "s1", "sg1", "sg2",
+            # Zendesk
+            "zendesk1", "zendesk2",
+            # Amazon SES
+            "aws", "ses", "amazon",
+            # Other major providers
+            "mailgun", "postmark", "sparkpost"
         ]
         
-        # Current and recent date-based selectors (more focused)
-        for months_back in range(4):  # Only check last 4 months
+        # Generic common patterns
+        common_patterns = [
+            "default", "dkim", "mail", "email", "key", "sig", "main",
+            "primary", "secondary", "backup", "auto", "service"
+        ]
+        
+        # Current and recent date-based selectors (focused approach)
+        date_selectors = []
+        for months_back in range(6):  # Last 6 months
             date = datetime.datetime.now() - datetime.timedelta(days=30 * months_back)
-            selectors.extend([
+            date_selectors.extend([
                 f"{date.year}{date.month:02d}",
-                f"{str(date.year)[-2:]}{date.month:02d}"
+                f"{str(date.year)[-2:]}{date.month:02d}",
+                f"{date.year}m{date.month:02d}"
             ])
         
-        # Modern service patterns
-        selectors.extend([
-            "aws", "ses", "mailgun", "sendgrid", "api", "service",
-            "auto", "managed", "corporate", "enterprise"
-        ])
+        # Quarterly and yearly patterns
+        for quarter in range(1, 5):
+            date_selectors.extend([
+                f"{current_year}q{quarter}",
+                f"{str(current_year)[-2:]}q{quarter}"
+            ])
         
-        return list(set(selectors))  # Remove duplicates and limit
-        
-        # Current and recent date-based selectors (Google, Microsoft style)
-        for year in [current_year - 1, current_year]:
-            for month in range(1, 13):
-                selectors.extend([
-                    f"{year}{month:02d}",
-                    f"{year}{month:02d}01", 
-                    f"{year}-{month:02d}",
-                    f"{str(year)[-2:]}{month:02d}"
-                ])
-        
-        # Weekly selectors (some providers rotate weekly)
-        import calendar
-        for week in range(1, 54):  # 52-53 weeks per year
-            selectors.extend([f"w{week}", f"week{week}", f"{current_year}w{week:02d}"])
-        
-        # Provider-specific modern patterns
-        selectors.extend([
-            # Cloud providers
-            "aws", "azure", "gcp", "cloudflare", "auto", "managed",
-            # Marketing platforms  
-            "mailchimp", "campaign", "newsletter", "marketing", "promo",
-            # Modern SaaS patterns
-            "api", "service", "webhook", "notification", "system",
-            # Security-conscious patterns
-            "secure", "verified", "trusted", "official", "corporate"
-        ])
-        
-        return list(set(selectors))  # Remove duplicates
+        # Combine all selectors and remove duplicates
+        all_selectors = provider_selectors + common_patterns + date_selectors
+        return list(set(all_selectors))
 
     def _intelligent_pattern_discovery(self, found_selectors):
         """Generate additional selectors based on patterns found in existing ones."""
@@ -834,12 +843,18 @@ class Domain:
         if "p=" in record_str:
             pub_key = record_str.split("p=")[1].split(";")[0].strip()
             if pub_key:
-                # Assess key strength
-                key_length = len(pub_key)
-                if key_length < 200:
-                    status = "Weak (short key)"
-                elif key_length > 800:
-                    status = "Strong (long key)"
+                # Assess RSA key strength by decoded size
+                key_bits = self._estimate_rsa_key_bits(pub_key)
+                if key_bits == 0:
+                    status = "Invalid (malformed key)"
+                elif key_bits < 1024:
+                    status = "Weak (<1024-bit)"
+                elif key_bits == 1024:
+                    status = "Weak (1024-bit RSA)"
+                elif key_bits == 2048:
+                    status = "Strong (2048-bit RSA)"
+                elif key_bits > 2048:
+                    status = f"Strong ({key_bits}-bit RSA)"
                 else:
                     status = "Standard"
                     
@@ -849,6 +864,69 @@ class Domain:
                 public_key_preview = "(empty)"
         
         return key_type, algorithm, status, public_key_preview
+    
+    def _estimate_rsa_key_bits(self, pub_key_b64):
+        """Estimate RSA key bit length from base64-encoded public key."""
+        try:
+            import base64
+            
+            # Decode base64
+            key_data = base64.b64decode(pub_key_b64)
+            key_size = len(key_data)
+            
+            # RSA public key size approximations:
+            # 1024-bit RSA ≈ 140-180 bytes
+            # 2048-bit RSA ≈ 270-300 bytes  
+            # 4096-bit RSA ≈ 540-580 bytes
+            
+            if key_size <= 128:
+                return 512  # Very weak
+            elif key_size <= 180:
+                return 1024  # Weak
+            elif key_size <= 320:
+                return 2048  # Strong
+            elif key_size <= 600:
+                return 4096  # Very strong
+            else:
+                return 8192  # Extremely strong
+                
+        except Exception:
+            return 0  # Unable to determine
+    
+    def _check_prove_email_archive(self):
+        """Check archive.prove.email for historical DKIM selectors."""
+        discovered_selectors = {}
+        
+        try:
+            import requests
+            import json
+            
+            # Query the archive.prove.email API for known selectors
+            api_url = f"https://archive.prove.email/api/selectors/{self.name}"
+            
+            headers = {
+                'User-Agent': 'DNS-Inspector-Tool/1.0',
+                'Accept': 'application/json'
+            }
+            
+            response = requests.get(api_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'selectors' in data:
+                    # Validate each selector found in archive
+                    for selector in data['selectors']:
+                        if isinstance(selector, str) and len(selector) <= 50:  # Reasonable selector length
+                            # Verify the selector still exists
+                            results, _ = self.check_dkim([selector])
+                            if results and results.get(selector):
+                                discovered_selectors[selector] = results[selector]
+                                
+        except Exception:
+            # Archive lookup is optional - silently continue on any error
+            pass
+            
+        return discovered_selectors
         
     def _assess_dkim_security(self, selectors):
         """Provide security assessment of found DKIM selectors."""
@@ -926,18 +1004,50 @@ class Domain:
             
             # Only generate patterns for reasonable org names (not too short/long)
             if 3 <= len(org_name) <= 15:
-                # Generate focused variations
+                # Basic organization patterns
                 patterns.extend([
                     org_name, f"{org_name}1", f"{org_name}2",
-                    f"{org_name}-mail", f"{org_name}mail",
-                    org_name[:4] if len(org_name) > 4 else org_name  # Abbreviation
+                    f"{org_name}-mail", f"{org_name}mail"
                 ])
+                
+                # Company abbreviation patterns
+                abbrevs = self._generate_company_abbreviations(org_name)
+                patterns.extend(abbrevs)
                 
                 # Try only most common business patterns
                 for prefix in ['mail', 'email']:
                     patterns.append(f"{prefix}-{org_name}")
+                    if abbrevs:
+                        patterns.append(f"{prefix}-{abbrevs[0]}")
         
         return patterns[:20]  # Limit results to prevent excessive queries
+    
+    def _generate_company_abbreviations(self, company_name):
+        """Generate likely company abbreviations for DKIM selector patterns."""
+        abbrevs = []
+        
+        # Common abbreviation patterns
+        if len(company_name) >= 4:
+            # First 3-4 characters
+            abbrevs.extend([company_name[:3], company_name[:4]])
+            
+            # Vowel removal (common IT pattern)
+            no_vowels = ''.join([c for c in company_name if c not in 'aeiou'])
+            if len(no_vowels) >= 2 and no_vowels != company_name:
+                abbrevs.append(no_vowels[:4])
+        
+        # Industry-specific patterns
+        common_suffixes = ['corp', 'inc', 'ltd', 'llc', 'co', 'company', 'group', 'tech', 'systems', 'solutions']
+        for suffix in common_suffixes:
+            if company_name.endswith(suffix):
+                base = company_name[:-len(suffix)].strip()
+                if len(base) >= 2:
+                    abbrevs.extend([base, base[:3], base[:4]])
+                break
+        
+        # Remove duplicates and filter reasonable length
+        abbrevs = list(set([a for a in abbrevs if 2 <= len(a) <= 6]))
+        return abbrevs[:5]  # Limit to prevent excessive queries
 
     def _detect_time_based_selectors(self):
         """Detect time-based DKIM selector rotation patterns."""
@@ -1371,9 +1481,10 @@ class Inspector:
             
             # 1. Check configured selectors first (if any)
             dkim_selectors = self.config.get("dkim_selectors", [])
+            dkim_rate_limit = self.config.get("dkim_rate_limit", 10)
             if dkim_selectors:
                 console.print("  [cyan]• Checking configured DKIM selectors...[/cyan]")
-                configured_results, valid_configured = self.domain.check_dkim(dkim_selectors)
+                configured_results, valid_configured = self.domain.check_dkim(dkim_selectors, rate_limit=dkim_rate_limit)
                 all_found_selectors.update({k: v for k, v in configured_results.items() if v})
                 configured_missing = [k for k in dkim_selectors if k not in all_found_selectors]
                 total_checked += len(dkim_selectors)
@@ -1397,6 +1508,14 @@ class Inspector:
                     if mx_results:
                         all_found_selectors.update(mx_results)
                         discovery_sources.append(f"MX analysis ({len(mx_results)} found)")
+                
+                # Archive.prove.email lookup for historical data
+                if len(all_found_selectors) < 5:
+                    console.print("  [cyan]• Checking historical DKIM registry...[/cyan]")
+                    archive_results = self.domain._check_prove_email_archive()
+                    if archive_results:
+                        all_found_selectors.update(archive_results)
+                        discovery_sources.append(f"Archive registry ({len(archive_results)} found)")
             
             discovery_time = time.time() - start_time
             
@@ -1441,8 +1560,8 @@ class Inspector:
                 console.print("  [yellow]• This domain may not have DKIM configured[/yellow]")
                 console.print("  [yellow]• Emails from this domain cannot be cryptographically verified[/yellow]")
             
-            # Show configured selectors that are missing (only if they were explicitly configured)
-            if configured_missing and dkim_selectors:
+            # Show configured selectors that are missing (only if discovery is disabled or no selectors found)
+            if configured_missing and dkim_selectors and (not self.config.get("dkim_discovery", True) or not all_found_selectors):
                 console.print(f"\n  [yellow]⚠ Configured selectors not found: {', '.join(configured_missing)}[/yellow]")
                 console.print("  [dim]Consider updating your configuration file or checking with your email provider[/dim]")
             
