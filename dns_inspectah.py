@@ -445,79 +445,110 @@ class Domain:
             "neutral": neutral,
         }
 
-    def check_dkim(self, selectors):
-        """Check DKIM TXT records for the provided selectors."""
+    def check_dkim(self, selectors, show_progress=False):
+        """Check DKIM TXT records for the provided selectors with improved error handling."""
         results = {}
-        for sel in selectors:
-            name = f"{sel}._domainkey.{self.name}"
-            records, _ = self.get_txt_record(name)
-            found = None
-            for rec in records:
-                if "v=DKIM1" in rec:
-                    found = rec
-                    break
-            results[sel] = found
-        return results
+        valid_selectors = []
+        
+        if show_progress and len(selectors) > 10:
+            from rich.progress import Progress
+            with Progress() as progress:
+                task = progress.add_task("[cyan]Checking DKIM selectors...", total=len(selectors))
+                
+                for sel in selectors:
+                    name = f"{sel}._domainkey.{self.name}"
+                    records, _ = self.get_txt_record(name)
+                    found = None
+                    for rec in records:
+                        if "v=DKIM1" in rec:
+                            found = rec
+                            valid_selectors.append(sel)
+                            break
+                    results[sel] = found
+                    progress.advance(task)
+        else:
+            for sel in selectors:
+                name = f"{sel}._domainkey.{self.name}"
+                records, _ = self.get_txt_record(name)
+                found = None
+                for rec in records:
+                    if "v=DKIM1" in rec:
+                        found = rec
+                        valid_selectors.append(sel)
+                        break
+                results[sel] = found
+        
+        return results, valid_selectors
 
     def discover_dkim_selectors(self, use_common_selectors=True, use_brute_force=False):
         """
-        Discover DKIM selectors using advanced techniques including SPF analysis,
-        certificate transparency, and intelligent pattern recognition.
+        Discover DKIM selectors using smart techniques with better user experience.
         
         Args:
             use_common_selectors (bool): Check against common selector names
             use_brute_force (bool): Attempt intelligent brute force with patterns
             
         Returns:
-            dict: Dictionary of found selectors and their records
+            dict: Dictionary with discovery results and metadata
         """
-        discovered_selectors = {}
-        
         from rich.console import Console
         console = Console()
         
-        # 1. SPF Record Analysis - Extract domains from SPF includes
-        console.print("  [cyan]Analyzing SPF records for DKIM clues...[/cyan]")
+        discovery_results = {
+            'found_selectors': {},
+            'discovery_methods': [],
+            'total_checked': 0,
+            'intelligence_sources': []
+        }
+        
+        # 1. Email platform intelligence (fast and targeted)
+        console.print("  [cyan]• Analyzing email platform for targeted discovery...[/cyan]")
+        platform_selectors = self._get_platform_specific_selectors()
+        if platform_selectors:
+            results, valid = self.check_dkim(platform_selectors, show_progress=False)
+            discovery_results['found_selectors'].update({k: v for k, v in results.items() if v})
+            discovery_results['total_checked'] += len(platform_selectors)
+            if valid:
+                discovery_results['intelligence_sources'].append(f"Email platform patterns ({len(valid)} found)")
+        
+        # 2. SPF Record Analysis - Extract domains from SPF includes  
+        console.print("  [cyan]• Extracting DKIM clues from SPF records...[/cyan]")
         spf_selectors = self._extract_dkim_from_spf()
-        discovered_selectors.update(spf_selectors)
+        if spf_selectors:
+            discovery_results['found_selectors'].update(spf_selectors)
+            discovery_results['intelligence_sources'].append(f"SPF analysis ({len(spf_selectors)} found)")
         
-        # 2. BIMI Record Analysis - Check for BIMI which often indicates DKIM
-        console.print("  [cyan]Checking BIMI records for DKIM indicators...[/cyan]")
-        bimi_selectors = self._check_bimi_dkim_indicators()
-        discovered_selectors.update(bimi_selectors)
+        # 3. Enhanced common selectors (only if not many found yet)
+        if use_common_selectors and len(discovery_results['found_selectors']) < 3:
+            console.print("  [cyan]• Checking common DKIM selector patterns...[/cyan]")
+            common_selectors = self._get_smart_common_selectors()
+            results, valid = self.check_dkim(common_selectors, show_progress=len(common_selectors) > 20)
+            discovery_results['found_selectors'].update({k: v for k, v in results.items() if v})
+            discovery_results['total_checked'] += len(common_selectors)
+            if valid:
+                discovery_results['intelligence_sources'].append(f"Common patterns ({len(valid)} found)")
         
-        # 3. Email Infrastructure Detection
-        console.print("  [cyan]Analyzing email infrastructure...[/cyan]")
-        infra_selectors = self._analyze_email_infrastructure()
-        discovered_selectors.update(infra_selectors)
+        # 4. Advanced pattern discovery (only if brute force enabled)
+        if use_brute_force and len(discovery_results['found_selectors']) > 0:
+            console.print("  [cyan]• Performing intelligent pattern-based discovery...[/cyan]")
+            pattern_selectors = self._intelligent_pattern_discovery(discovery_results['found_selectors'])
+            if pattern_selectors:
+                results, valid = self.check_dkim(pattern_selectors, show_progress=True)
+                discovery_results['found_selectors'].update({k: v for k, v in results.items() if v})
+                discovery_results['total_checked'] += len(pattern_selectors)
+                if valid:
+                    discovery_results['intelligence_sources'].append(f"Pattern analysis ({len(valid)} found)")
         
-        # 4. Enhanced common selectors with current patterns
-        if use_common_selectors:
-            console.print("  [cyan]Checking enhanced common selectors...[/cyan]")
-            common_selectors = self._get_enhanced_common_selectors()
-            common_results = self.check_dkim(common_selectors)
-            for selector, record in common_results.items():
-                if record and selector not in discovered_selectors:
-                    discovered_selectors[selector] = record
-        
-        # 5. DNS Zone Walking for DKIM patterns
-        console.print("  [cyan]Scanning for additional DKIM patterns...[/cyan]")
-        zone_selectors = self._advanced_dkim_scanning()
-        discovered_selectors.update(zone_selectors)
-        
-        # 6. Intelligent brute force based on discovered patterns
+        discovery_results['discovery_methods'] = [
+            'Platform Intelligence', 'SPF Analysis', 'Common Patterns'
+        ]
         if use_brute_force:
-            console.print("  [cyan]Performing intelligent pattern-based discovery...[/cyan]")
-            pattern_selectors = self._intelligent_pattern_discovery(discovered_selectors)
-            pattern_results = self.check_dkim(pattern_selectors)
-            for selector, record in pattern_results.items():
-                if record and selector not in discovered_selectors:
-                    discovered_selectors[selector] = record
-        
-        return discovered_selectors
+            discovery_results['discovery_methods'].append('Pattern Recognition')
+            
+        return discovery_results
 
     def _extract_dkim_from_spf(self):
-        """Extract potential DKIM selectors by analyzing SPF includes."""
+        """Extract potential DKIM selectors by analyzing SPF includes with improved efficiency."""
         selectors = {}
         
         try:
@@ -530,33 +561,37 @@ class Domain:
                         included_domain = part.split(':', 1)[1]
                         
                         # Extract potential selectors from included domains
+                        candidates = []
                         if 'mailgun' in included_domain:
-                            selectors.update(self.check_dkim(['mg', 'mailgun', 'mta']))
+                            candidates = ['mg', 'mailgun', 'mta']
                         elif 'sendgrid' in included_domain:
-                            selectors.update(self.check_dkim(['sendgrid', 'sg', 'em']))
+                            candidates = ['sendgrid', 'sg', 'em']
                         elif 'amazonses' in included_domain or 'ses' in included_domain:
-                            selectors.update(self.check_dkim(['amazonses', 'ses', 'aws']))
+                            candidates = ['amazonses', 'ses', 'aws']
                         elif 'office365' in included_domain or 'outlook' in included_domain:
-                            selectors.update(self.check_dkim(['selector1', 'selector2', 'microsoft']))
+                            candidates = ['selector1', 'selector2', 'microsoft']
                         elif 'google' in included_domain or 'gmail' in included_domain:
-                            # Google uses date-based selectors
+                            # Google uses date-based selectors - check recent months only
                             import datetime
-                            current_year = datetime.datetime.now().year
-                            google_selectors = ['google', 'gmail']
-                            for year in range(current_year - 2, current_year + 1):
-                                for month in range(1, 13):
-                                    google_selectors.append(f"{year}{month:02d}")
-                            selectors.update(self.check_dkim(google_selectors))
+                            now = datetime.datetime.now()
+                            candidates = ['google', 'gmail']
+                            for months_back in range(6):  # Only check last 6 months
+                                date = now - datetime.timedelta(days=30 * months_back)
+                                candidates.append(f"{date.year}{date.month:02d}")
                         elif 'mailchimp' in included_domain:
-                            selectors.update(self.check_dkim(['k1', 'k2', 'mailchimp']))
+                            candidates = ['k1', 'k2', 'mailchimp']
                         elif 'constantcontact' in included_domain:
-                            selectors.update(self.check_dkim(['cc', 'constantcontact']))
+                            candidates = ['cc', 'constantcontact']
+                            
+                        if candidates:
+                            results, valid = self.check_dkim(candidates)
+                            selectors.update({k: v for k, v in results.items() if v})
+                            
         except Exception as e:
-            from rich.console import Console
-            console = Console()
-            console.print(f"  [yellow]SPF analysis failed: {e}[/yellow]")
+            # Silently continue - SPF analysis is optional intelligence
+            pass
         
-        return {k: v for k, v in selectors.items() if v}
+        return selectors
 
     def _check_bimi_dkim_indicators(self):
         """Check BIMI records which often indicate strong DKIM implementation."""
@@ -571,11 +606,12 @@ class Domain:
                     'default', 'production', 'enterprise', 'corporate', 'main',
                     'primary', 'bimi', 'brand', 'marketing', 'official'
                 ]
-                selectors.update(self.check_dkim(enterprise_selectors))
+                results, valid = self.check_dkim(enterprise_selectors)
+                selectors.update({k: v for k, v in results.items() if v})
         except Exception:
             pass
         
-        return {k: v for k, v in selectors.items() if v}
+        return selectors
 
     def _analyze_email_infrastructure(self):
         """Analyze email infrastructure to predict DKIM selector patterns."""
@@ -590,43 +626,104 @@ class Domain:
                 if len(parts) >= 2:
                     mx_hosts.append(parts[1].lower().rstrip('.'))
             
-            # Get A records to check for cloud providers
-            a_records, _ = self.get_dns_records("A")
-            
             # Analyze hosting patterns
             for mx_host in mx_hosts:
+                candidates = []
+                
                 if any(cloud in mx_host for cloud in ['amazonaws', 'google', 'azure', 'cloudflare']):
-                    # Cloud-hosted likely uses modern selector patterns
-                    cloud_selectors = ['default', 'auto', 'cloud', 'managed', 'service']
-                    selectors.update(self.check_dkim(cloud_selectors))
-                
-                if 'protection.outlook.com' in mx_host:
-                    # Office 365 / Exchange Online
-                    selectors.update(self.check_dkim(['selector1', 'selector2', 'microsoft', 'o365']))
-                
-                if any(security in mx_host for security in ['mimecast', 'proofpoint', 'forcepoint']):
-                    # Email security services often use predictable patterns
-                    security_selectors = ['default', 'sec', 'security', 'filter', 'gateway']
-                    selectors.update(self.check_dkim(security_selectors))
+                    candidates = ['default', 'auto', 'cloud', 'managed', 'service']
+                elif 'protection.outlook.com' in mx_host:
+                    candidates = ['selector1', 'selector2', 'microsoft', 'o365']
+                elif any(security in mx_host for security in ['mimecast', 'proofpoint', 'forcepoint']):
+                    candidates = ['default', 'sec', 'security', 'filter', 'gateway']
                     
-        except Exception as e:
-            from rich.console import Console
-            console = Console()
-            console.print(f"  [yellow]Infrastructure analysis failed: {e}[/yellow]")
+                if candidates:
+                    results, valid = self.check_dkim(candidates)
+                    selectors.update({k: v for k, v in results.items() if v})
+                    
+        except Exception:
+            # Silently continue - infrastructure analysis is optional
+            pass
         
-        return {k: v for k, v in selectors.items() if v}
+        return selectors
 
-    def _get_enhanced_common_selectors(self):
-        """Get an enhanced list of common selectors based on current patterns."""
+    def _get_platform_specific_selectors(self):
+        """Get selectors based on detected email platform for targeted discovery."""
+        try:
+            # Quick MX and SPF analysis to determine platform
+            mx_records, _ = self.get_dns_records("MX")
+            spf_data = self.check_spf()
+            
+            platform_selectors = set()
+            
+            # Analyze MX records for platform detection
+            for mx_record in mx_records:
+                mx_host = str(mx_record).split()[-1].lower().rstrip('.')
+                
+                if 'google' in mx_host:
+                    # Google Workspace - uses monthly rotation
+                    import datetime
+                    now = datetime.datetime.now()
+                    for months_back in range(6):  # Check last 6 months
+                        date = now - datetime.timedelta(days=30 * months_back)
+                        platform_selectors.add(f"{date.year}{date.month:02d}")
+                    platform_selectors.update(['google', 'googlemail', 'gapps'])
+                    
+                elif 'outlook.com' in mx_host or 'protection.outlook.com' in mx_host:
+                    # Microsoft 365 - uses selector1/selector2
+                    platform_selectors.update(['selector1', 'selector2', 'microsoft', 'o365'])
+                    
+                elif 'amazonses.com' in mx_host:
+                    platform_selectors.update(['amazonses', 'ses', 'aws'])
+                    
+                elif 'mailgun' in mx_host:
+                    platform_selectors.update(['mailgun', 'mg', 'mta'])
+                    
+                elif 'sendgrid' in mx_host:
+                    platform_selectors.update(['sendgrid', 'sg', 'em'])
+                    
+            # Analyze SPF records for additional clues
+            for spf_record in spf_data.get('records', []):
+                if 'google.com' in spf_record:
+                    # Add Google-specific selectors if not already added
+                    import datetime
+                    now = datetime.datetime.now()
+                    for months_back in range(3):
+                        date = now - datetime.timedelta(days=30 * months_back)
+                        platform_selectors.add(f"{date.year}{date.month:02d}")
+                        
+            return list(platform_selectors)[:20]  # Limit to prevent excessive queries
+            
+        except Exception:
+            return []
+    
+    def _get_smart_common_selectors(self):
+        """Get a smarter, more focused list of common selectors."""
         import datetime
         current_year = datetime.datetime.now().year
         current_month = datetime.datetime.now().month
         
-        # Base common selectors
+        # Most common selectors (proven to work across many domains)
         selectors = [
             "default", "selector1", "selector2", "s1", "s2", "k1", "k2",
-            "dkim", "mail", "email", "mx", "key1", "key2", "sig1", "sig2"
+            "dkim", "mail", "email", "key", "sig", "google", "microsoft"
         ]
+        
+        # Current and recent date-based selectors (more focused)
+        for months_back in range(4):  # Only check last 4 months
+            date = datetime.datetime.now() - datetime.timedelta(days=30 * months_back)
+            selectors.extend([
+                f"{date.year}{date.month:02d}",
+                f"{str(date.year)[-2:]}{date.month:02d}"
+            ])
+        
+        # Modern service patterns
+        selectors.extend([
+            "aws", "ses", "mailgun", "sendgrid", "api", "service",
+            "auto", "managed", "corporate", "enterprise"
+        ])
+        
+        return list(set(selectors))  # Remove duplicates and limit
         
         # Current and recent date-based selectors (Google, Microsoft style)
         for year in [current_year - 1, current_year]:
@@ -713,29 +810,108 @@ class Domain:
                             if new_suffix != suffix:
                                 pattern_selectors.add(base + new_suffix)
         
-        return list(pattern_selectors)[:100]  # Limit to prevent explosion
+        return list(pattern_selectors)[:50]  # Limit to prevent excessive queries
+        
+    def _parse_dkim_record(self, record):
+        """Parse DKIM record and extract key information for display."""
+        record_str = str(record)
+        
+        # Extract key type
+        key_type = "RSA"  # Default
+        if "k=" in record_str:
+            key_match = record_str.split("k=")[1].split(";")[0].strip()
+            key_type = key_match if key_match else "RSA"
+            
+        # Extract hash algorithm
+        algorithm = "sha256"  # Default 
+        if "h=" in record_str:
+            hash_match = record_str.split("h=")[1].split(";")[0].strip()
+            algorithm = hash_match if hash_match else "sha256"
+            
+        # Extract and assess public key
+        public_key_preview = "N/A"
+        status = "Valid"
+        if "p=" in record_str:
+            pub_key = record_str.split("p=")[1].split(";")[0].strip()
+            if pub_key:
+                # Assess key strength
+                key_length = len(pub_key)
+                if key_length < 200:
+                    status = "Weak (short key)"
+                elif key_length > 800:
+                    status = "Strong (long key)"
+                else:
+                    status = "Standard"
+                    
+                public_key_preview = pub_key[:32] + "..." if len(pub_key) > 32 else pub_key
+            else:
+                status = "Revoked (empty key)"
+                public_key_preview = "(empty)"
+        
+        return key_type, algorithm, status, public_key_preview
+        
+    def _assess_dkim_security(self, selectors):
+        """Provide security assessment of found DKIM selectors."""
+        if not selectors:
+            return
+            
+        from rich.console import Console
+        console = Console()
+        
+        assessments = []
+        strong_keys = 0
+        weak_keys = 0
+        revoked_keys = 0
+        
+        for selector, record in selectors.items():
+            if record:
+                record_str = str(record)
+                if "p=" in record_str:
+                    pub_key = record_str.split("p=")[1].split(";")[0].strip()
+                    if not pub_key:
+                        revoked_keys += 1
+                        assessments.append(f"Selector '{selector}' has revoked key")
+                    elif len(pub_key) < 200:
+                        weak_keys += 1
+                        assessments.append(f"Selector '{selector}' has weak key")
+                    else:
+                        strong_keys += 1
+        
+        # Overall assessment
+        if strong_keys > 0 and weak_keys == 0 and revoked_keys == 0:
+            console.print("  [bold green]✓ DKIM security: Excellent[/bold green]")
+        elif strong_keys > 0 and (weak_keys > 0 or revoked_keys > 0):
+            console.print("  [bold yellow]⚠ DKIM security: Mixed (some weak keys)[/bold yellow]")
+        elif weak_keys > 0:
+            console.print("  [bold yellow]⚠ DKIM security: Weak (short keys detected)[/bold yellow]")
+        elif revoked_keys > 0:
+            console.print("  [bold red]✗ DKIM security: Poor (revoked keys found)[/bold red]")
+            
+        # Show specific issues
+        for assessment in assessments[:3]:  # Limit to top 3 issues
+            console.print(f"  [dim]• {assessment}[/dim]")
 
     def _advanced_dkim_scanning(self):
-        """Advanced DKIM scanning using DNS enumeration and timing analysis."""
+        """Advanced DKIM scanning using organizational and time-based patterns."""
         selectors = {}
         
         try:
             # Check for common organizational patterns
             org_patterns = self._get_organizational_patterns()
             if org_patterns:
-                org_results = self.check_dkim(org_patterns)
-                selectors.update({k: v for k, v in org_results.items() if v})
+                results, valid = self.check_dkim(org_patterns)
+                selectors.update({k: v for k, v in results.items() if v})
             
-            # Time-based rotation detection
-            time_patterns = self._detect_time_based_selectors()
-            if time_patterns:
-                time_results = self.check_dkim(time_patterns)
-                selectors.update({k: v for k, v in time_results.items() if v})
+            # Time-based rotation detection (only if no patterns found yet)
+            if not selectors:
+                time_patterns = self._detect_time_based_selectors()
+                if time_patterns:
+                    results, valid = self.check_dkim(time_patterns)
+                    selectors.update({k: v for k, v in results.items() if v})
                 
-        except Exception as e:
-            from rich.console import Console
-            console = Console()
-            console.print(f"  [yellow]Advanced scanning failed: {e}[/yellow]")
+        except Exception:
+            # Silently continue - advanced scanning is optional
+            pass
         
         return selectors
 
@@ -748,23 +924,20 @@ class Domain:
         if len(domain_parts) >= 2:
             org_name = domain_parts[0]
             
-            # Generate variations
-            patterns.extend([
-                org_name, f"{org_name}1", f"{org_name}2",
-                f"{org_name}-mail", f"{org_name}-dkim", f"{org_name}mail",
-                org_name[:3], org_name[:4], org_name[:5]  # Abbreviations
-            ])
-            
-            # Try common business suffixes/prefixes
-            prefixes = ['corp', 'company', 'mail', 'email', 'smtp']
-            suffixes = ['inc', 'corp', 'llc', 'ltd', 'co']
-            
-            for prefix in prefixes:
-                patterns.append(f"{prefix}-{org_name}")
-            for suffix in suffixes:
-                patterns.append(f"{org_name}-{suffix}")
+            # Only generate patterns for reasonable org names (not too short/long)
+            if 3 <= len(org_name) <= 15:
+                # Generate focused variations
+                patterns.extend([
+                    org_name, f"{org_name}1", f"{org_name}2",
+                    f"{org_name}-mail", f"{org_name}mail",
+                    org_name[:4] if len(org_name) > 4 else org_name  # Abbreviation
+                ])
+                
+                # Try only most common business patterns
+                for prefix in ['mail', 'email']:
+                    patterns.append(f"{prefix}-{org_name}")
         
-        return patterns[:50]  # Limit results
+        return patterns[:20]  # Limit results to prevent excessive queries
 
     def _detect_time_based_selectors(self):
         """Detect time-based DKIM selector rotation patterns."""
@@ -816,8 +989,7 @@ class Domain:
 
     def enumerate_dkim_from_mx(self):
         """
-        Attempt to discover DKIM selectors based on MX record patterns.
-        Some organizations use predictable DKIM selector patterns based on their MX records.
+        Attempt to discover DKIM selectors based on MX record patterns with improved efficiency.
         """
         discovered_selectors = {}
         
@@ -838,7 +1010,13 @@ class Domain:
                 for mx_host in mx_hosts:
                     # Extract provider patterns
                     if "google" in mx_host.lower():
+                        # Add recent Google selectors
+                        import datetime
+                        now = datetime.datetime.now()
                         potential_selectors.extend(["google", "googleapis", "gapps"])
+                        for months_back in range(3):  # Check last 3 months
+                            date = now - datetime.timedelta(days=30 * months_back)
+                            potential_selectors.append(f"{date.year}{date.month:02d}")
                     elif "outlook" in mx_host.lower() or "microsoft" in mx_host.lower():
                         potential_selectors.extend(["selector1", "selector2", "microsoft"])
                     elif "amazon" in mx_host.lower() or "ses" in mx_host.lower():
@@ -849,15 +1027,12 @@ class Domain:
                         potential_selectors.extend(["sendgrid", "sg"])
                 
                 if potential_selectors:
-                    mx_results = self.check_dkim(potential_selectors)
-                    for selector, record in mx_results.items():
-                        if record:
-                            discovered_selectors[selector] = record
+                    results, valid = self.check_dkim(potential_selectors)
+                    discovered_selectors.update({k: v for k, v in results.items() if v})
         
-        except Exception as e:
-            from rich.console import Console
-            console = Console()
-            console.print(f"  [yellow]Warning: Could not analyze MX records for DKIM discovery: {e}[/yellow]")
+        except Exception:
+            # Silently continue - MX analysis is optional intelligence
+            pass
         
         return discovered_selectors
 
@@ -1054,108 +1229,79 @@ class Inspector:
         # DNS Discovery Section
         if self.config.get("run_dns", True):
             console.print("[bold blue]===== DNS DISCOVERY =====[/bold blue]")
+            console.print("  [dim]Analyzing DNS infrastructure and identifying potential security issues[/dim]")
             
-            # Check for wildcard DNS records across all configured types
+            # Intelligent wildcard checking - only check if we have record types
+            wildcard_found = False
             if self.config["dns_record_types"]:
-                console.print("[*] Checking for wildcard DNS records...")
-                wildcard = self.domain.check_wildcard_records(self.config["dns_record_types"])
-                results["wildcard"] = wildcard
-                if wildcard:
-                    console.print("    [bold red][!] Wildcard DNS records found.[/bold red]\n")
+                console.print("\n[*] Checking for wildcard DNS configurations...")
+                wildcard_found = self.domain.check_wildcard_records(self.config["dns_record_types"])
+                results["wildcard"] = wildcard_found
+                if wildcard_found:
+                    console.print("  [bold red]⚠ Wildcard DNS records detected[/bold red]")
+                    console.print("  [yellow]• Potential security risk: Could enable subdomain takeover attacks[/yellow]")
+                    console.print("  [yellow]• Recommendation: Review wildcard configurations for necessity[/yellow]")
                 else:
-                    console.print("    [green][ ] No wildcard DNS records found.[/green]\n")
+                    console.print("  [green]✓ No wildcard DNS records found[/green]")
             else:
                 results["wildcard"] = False
 
-            # Subdomain enumeration
-            subdomains = []
-            if self.config.get("subdomains"):
-                console.print("[*] Enumerating subdomains...")
-                found_subs = self.domain.enumerate_subdomains(
-                    self.config["subdomains"], 
-                    max_workers=self.config.get("max_workers", 10),
-                    recursive=self.config.get("recursive", True)
-                )
-                subdomains.extend(found_subs)
-                
-                # Try alternate DNS servers for additional coverage
-                if self.config.get("alternate_dns", False):
-                    console.print("[*] Checking subdomains via alternate DNS servers...")
-                    alt_subs = self.domain.enumerate_alternate_dns(self.config["subdomains"])
-                    subdomains.extend(alt_subs)
-                    
-            if self.config.get("ct_logs"):
-                console.print(
-                    "[*] Pulling subdomains from certificate transparency logs..."
-                )
-                ct_subs = self.domain.enumerate_ct_subdomains()
-                subdomains.extend(ct_subs)
-                
-            if self.config.get("dns_dumpster", False):
-                console.print("[*] Querying DNSDumpster for additional subdomains...")
-                dd_subs = self.domain.enumerate_dns_dumpster()
-                subdomains.extend(dd_subs)
-                
-            if self.config.get("zone_transfer"):
-                console.print("[*] Attempting zone transfer...")
-                axfr_subs = self.domain.attempt_zone_transfer()
-                subdomains.extend(axfr_subs)
-                if not axfr_subs:
-                    console.print("    Zone transfer failed or no records found.\n")
-
-            subdomain_count = len(set(subdomains))
-            results["subdomains"] = sorted(set(subdomains))
+            # Enhanced subdomain enumeration with intelligence
+            subdomain_results = self._perform_intelligent_subdomain_discovery()
+            subdomains = subdomain_results['subdomains']
+            subdomain_count = len(subdomains)
+            results["subdomains"] = sorted(subdomains)
+            
+            # Display subdomain results with insights
             if subdomains:
-                table = Table(title="Discovered subdomains")
-                table.add_column("Subdomain", style="cyan")
-                for sub in sorted(set(subdomains)):
-                    table.add_row(sub)
-                console.print(table)
-            elif self.config.get("subdomains") or self.config.get("zone_transfer"):
-                console.print("    No subdomains found.\n")
-
-            # DNS record gathering
-            if self.config["dns_record_types"]:
-                console.print("[*] Gathering DNS records...\n")
-                meta_errors = []
-                record_counts = {}
-                dns_records = {}
-                record_table = Table(title="DNS Records")
-                record_table.add_column("Type", style="green")
-                record_table.add_column("Value", style="magenta")
-                for record_type in self.config["dns_record_types"]:
-                    records, meta_error = self.domain.get_dns_records(record_type)
-                    if meta_error:
-                        meta_errors.append(record_type)
-                        continue
-                    record_counts[record_type] = len(records)
-                    dns_records[record_type] = records
-                    for record in records:
-                        record_table.add_row(record_type, record)
-                if record_table.row_count:
-                    console.print(record_table)
-                if meta_errors:
-                    console.print(
-                        f"[yellow]DNS metaqueries are not allowed for: {', '.join(meta_errors)}[/yellow]\n"
-                    )
-
-                results["dns_records"] = dns_records
-                results["meta_errors"] = meta_errors
+                console.print(f"\n[bold green]✓ Found {subdomain_count} subdomain(s)[/bold green]")
+                if subdomain_results['sources']:
+                    console.print(f"  [dim]Discovery sources: {', '.join(subdomain_results['sources'])}[/dim]")
+                    
+                # Create categorized subdomain table
+                subdomain_table = self._create_subdomain_table(subdomains)
+                console.print(subdomain_table)
                 
-                # DNS Summary
-                if record_counts or subdomain_count:
-                    summary = Table(title="DNS Discovery Summary")
-                    summary.add_column("Record Type", style="green")
-                    summary.add_column("Count", style="magenta")
-                    for rtype, count in record_counts.items():
-                        summary.add_row(rtype, str(count))
-                    if self.config.get("subdomains") or self.config.get("zone_transfer"):
-                        summary.add_row("Subdomains found", str(subdomain_count))
-                    console.print(summary)
+                # Show subdomain insights
+                if subdomain_results['insights']:
+                    console.print("\n[bold cyan]Subdomain Analysis:[/bold cyan]")
+                    for insight in subdomain_results['insights']:
+                        console.print(f"  {insight}")
+            elif self.config.get("subdomains") or self.config.get("zone_transfer"):
+                console.print("\n  [yellow]No subdomains discovered through enumeration[/yellow]")
+                console.print("  [dim]• Domain may use different naming conventions[/dim]")
+                console.print("  [dim]• Consider updating wordlist or enabling additional discovery methods[/dim]")
+
+            # Smart DNS record gathering with analysis
+            if self.config["dns_record_types"]:
+                console.print("\n[*] Gathering and analyzing DNS records...")
+                dns_results = self._analyze_dns_records_intelligently()
+                
+                results["dns_records"] = dns_results["records"]
+                results["meta_errors"] = dns_results["meta_errors"]
+                
+                # Display organized results
+                if dns_results["record_table"].row_count > 0:
+                    console.print(dns_results["record_table"])
+                    
+                # Show DNS insights
+                if dns_results["insights"]:
+                    console.print("\n[bold cyan]DNS Infrastructure Insights:[/bold cyan]")
+                    for insight in dns_results["insights"]:
+                        console.print(f"  {insight}")
+                
+                # Handle meta errors gracefully
+                if dns_results["meta_errors"]:
+                    console.print(f"\n  [dim]Note: Some DNS queries restricted by provider: {', '.join(dns_results['meta_errors'])}[/dim]")
+                    
+                # Enhanced DNS Summary with security assessment
+                dns_summary = self._create_dns_security_summary(dns_results["records"], subdomain_count, wildcard_found)
+                if dns_summary:
+                    console.print(dns_summary)
             else:
                 results["dns_records"] = {}
                 results["meta_errors"] = []
-                results["subdomains"] = []
+                console.print("  [dim]No DNS record types configured for analysis[/dim]")
         else:
             # DNS section skipped
             results["wildcard"] = False
@@ -1213,92 +1359,99 @@ class Inspector:
                 elif not spf["soft"] and not spf["neutral"]:
                     console.print("  [green]✓ SPF properly configured with hard fail (-all)[/green]")
 
-            # Enhanced DKIM Discovery with Progress Tracking
+            # Enhanced DKIM Discovery with Better User Experience
             console.print("\n[*] Discovering DKIM selectors...")
             console.print("  [dim]DKIM provides cryptographic signatures to verify email authenticity[/dim]")
             
             start_time = time.time()
-            all_dkim_results = {}
+            all_found_selectors = {}
+            configured_missing = []
+            discovery_sources = []
+            total_checked = 0
             
-            # Simplified discovery without complex progress bars to avoid timeout
+            # 1. Check configured selectors first (if any)
             dkim_selectors = self.config.get("dkim_selectors", [])
-            configured_results = {}
             if dkim_selectors:
-                console.print("  [cyan]Checking configured DKIM selectors...[/cyan]")
-                configured_results = self.domain.check_dkim(dkim_selectors)
-                all_dkim_results.update(configured_results)
+                console.print("  [cyan]• Checking configured DKIM selectors...[/cyan]")
+                configured_results, valid_configured = self.domain.check_dkim(dkim_selectors)
+                all_found_selectors.update({k: v for k, v in configured_results.items() if v})
+                configured_missing = [k for k in dkim_selectors if k not in all_found_selectors]
+                total_checked += len(dkim_selectors)
+                if valid_configured:
+                    discovery_sources.append(f"Configuration file ({len(valid_configured)} found)")
             
-            # Discover additional selectors if enabled
+            # 2. Smart discovery if enabled
             if self.config.get("dkim_discovery", True):
-                console.print("  [cyan]Performing DKIM selector discovery...[/cyan]")
-                discovered_results = self.domain.discover_dkim_selectors(
+                discovery_results = self.domain.discover_dkim_selectors(
                     use_common_selectors=True, 
-                    use_brute_force=False  # Disable brute force to avoid timeout
+                    use_brute_force=self.config.get("dkim_brute_force", False)
                 )
-                all_dkim_results.update(discovered_results)
+                all_found_selectors.update(discovery_results['found_selectors'])
+                discovery_sources.extend(discovery_results['intelligence_sources'])
+                total_checked += discovery_results['total_checked']
                 
-                # MX-based discovery
+                # MX-based discovery if enabled
                 if self.config.get("dkim_mx_analysis", True):
-                    console.print("  [cyan]Analyzing MX records for DKIM patterns...[/cyan]")
+                    console.print("  [cyan]• Analyzing MX records for DKIM patterns...[/cyan]")
                     mx_results = self.domain.enumerate_dkim_from_mx()
-                    all_dkim_results.update(mx_results)
+                    if mx_results:
+                        all_found_selectors.update(mx_results)
+                        discovery_sources.append(f"MX analysis ({len(mx_results)} found)")
             
             discovery_time = time.time() - start_time
-            console.print(f"  [dim]Discovery completed in {discovery_time:.1f} seconds[/dim]")
             
-            # Display comprehensive results
-            found_selectors = {k: v for k, v in all_dkim_results.items() if v}
-            missing_selectors = []
-            
-            if found_selectors:
-                console.print(f"\n  [bold green]✓ Found {len(found_selectors)} DKIM selector(s)[/bold green]")
+            # Display results with better categorization
+            if all_found_selectors:
+                console.print(f"\n  [bold green]✓ Found {len(all_found_selectors)} DKIM selector(s)[/bold green]")
+                if discovery_sources:
+                    console.print(f"  [dim]Discovery sources: {', '.join(discovery_sources)}[/dim]")
+                console.print(f"  [dim]Checked {total_checked} selectors in {discovery_time:.1f}s[/dim]")
                 
-                # Create detailed DKIM table
+                # Create enhanced DKIM table
                 dkim_table = Table(title="DKIM Records Found")
-                dkim_table.add_column("Selector", style="cyan")
-                dkim_table.add_column("Key Type", style="magenta")
+                dkim_table.add_column("Selector", style="cyan", no_wrap=True)
                 dkim_table.add_column("Algorithm", style="green")
-                dkim_table.add_column("Public Key (truncated)", style="yellow")
-                dkim_table.add_column("Full Record", style="dim")
+                dkim_table.add_column("Key Type", style="magenta")
+                dkim_table.add_column("Status", style="yellow")
+                dkim_table.add_column("Public Key", style="dim", max_width=40)
                 
-                for selector, record in found_selectors.items():
+                for selector, record in sorted(all_found_selectors.items()):
                     if record:
                         # Parse DKIM record for details
-                        key_type = "RSA"  # Default
-                        algorithm = "sha256"  # Default
-                        public_key_preview = "N/A"
+                        key_type, algorithm, status, pub_key_preview = self.domain._parse_dkim_record(record)
                         
-                        record_str = str(record)
-                        if "k=" in record_str:
-                            key_type = record_str.split("k=")[1].split(";")[0].strip()
-                        if "h=" in record_str:
-                            algorithm = record_str.split("h=")[1].split(";")[0].strip()
-                        if "p=" in record_str:
-                            pub_key = record_str.split("p=")[1].split(";")[0].strip()
-                            public_key_preview = pub_key[:32] + "..." if len(pub_key) > 32 else pub_key
+                        # Determine if this was a configured selector
+                        source_info = "Configured" if selector in dkim_selectors else "Discovered"
                         
                         dkim_table.add_row(
                             selector,
-                            key_type,
                             algorithm,
-                            public_key_preview,
-                            record_str[:100] + "..." if len(record_str) > 100 else record_str
+                            key_type,
+                            f"{status} ({source_info})",
+                            pub_key_preview
                         )
                 
                 console.print(dkim_table)
+                
+                # Security assessment
+                self.domain._assess_dkim_security(all_found_selectors)
+                
             else:
                 console.print("  [bold red]✗ No DKIM selectors found[/bold red]")
+                console.print("  [yellow]• This domain may not have DKIM configured[/yellow]")
+                console.print("  [yellow]• Emails from this domain cannot be cryptographically verified[/yellow]")
             
-            # Show configured selectors that weren't found
-            for sel in dkim_selectors:
-                if sel not in all_dkim_results or not all_dkim_results[sel]:
-                    console.print(f"  [bold red]✗ Configured DKIM selector '{sel}' missing[/bold red]")
-                    missing_selectors.append(sel)
+            # Show configured selectors that are missing (only if they were explicitly configured)
+            if configured_missing and dkim_selectors:
+                console.print(f"\n  [yellow]⚠ Configured selectors not found: {', '.join(configured_missing)}[/yellow]")
+                console.print("  [dim]Consider updating your configuration file or checking with your email provider[/dim]")
             
             results["dkim"] = {
-                "found_selectors": found_selectors,
-                "missing_selectors": missing_selectors,
-                "discovery_time": discovery_time
+                "found_selectors": all_found_selectors,
+                "configured_missing": configured_missing,
+                "discovery_time": discovery_time,
+                "total_checked": total_checked,
+                "discovery_sources": discovery_sources
             }
             results["email_platform"] = email_platform
             results["security_provider"] = security_provider
@@ -1311,21 +1464,36 @@ class Inspector:
         # Web Security Section  
         if self.config.get("run_web", True):
             console.print("\n[bold magenta]===== WEB SECURITY =====[/bold magenta]")
+            console.print("  [dim]Analyzing website security configuration and best practices[/dim]")
             
-            # SSL/TLS Certificate validation
-            console.print("[*] Validating SSL certificate...")
+            # Enhanced SSL/TLS Certificate validation
+            console.print("\n[*] Analyzing SSL/TLS configuration...")
             ssl_validator = SSLValidator(self.domain.name)
             ssl_results = ssl_validator.validate_certificate()
             results["ssl"] = ssl_results
             
+            # Comprehensive security analysis
+            web_security_summary = self._create_web_security_summary(ssl_results)
+            
             # Website security header scanning
             if not self.config.get("quick_mode", False):
-                console.print("[*] Performing security header scan...")
+                console.print("\n[*] Performing comprehensive security header analysis...")
                 security_scanner = SecurityHeaderScanner(self.domain.name)
                 security_results = security_scanner.scan_security_headers()
                 results["security_headers"] = security_results
+                
+                # Update web security summary with header results
+                if security_results:
+                    web_security_summary.update(self._analyze_security_headers_summary(security_results))
             else:
+                console.print("\n[*] Quick mode: Basic SSL validation only")
                 results["security_headers"] = {}
+                
+            # Display comprehensive web security summary
+            if web_security_summary:
+                final_summary = self._create_final_web_security_summary(web_security_summary)
+                console.print(final_summary)
+                
         else:
             # Web security section skipped
             results["ssl"] = {}
@@ -1333,6 +1501,483 @@ class Inspector:
         
         console.print()
         return results
+
+    def _analyze_dns_records_intelligently(self):
+        """Analyze DNS records with intelligence and categorization."""
+        meta_errors = []
+        record_counts = {}
+        dns_records = {}
+        insights = []
+        
+        # Prioritize important record types first
+        important_types = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'CNAME']
+        other_types = [t for t in self.config["dns_record_types"] if t not in important_types]
+        ordered_types = [t for t in important_types if t in self.config["dns_record_types"]] + other_types
+        
+        record_table = Table(title="DNS Records Analysis")
+        record_table.add_column("Type", style="green", no_wrap=True)
+        record_table.add_column("Count", style="blue", justify="center")
+        record_table.add_column("Values", style="magenta", max_width=60)
+        record_table.add_column("Analysis", style="yellow", max_width=30)
+        
+        for record_type in ordered_types:
+            records, meta_error = self.domain.get_dns_records(record_type)
+            if meta_error:
+                meta_errors.append(record_type)
+                continue
+                
+            record_counts[record_type] = len(records)
+            dns_records[record_type] = records
+            
+            if records:
+                # Analyze record for insights
+                analysis = self._analyze_record_type(record_type, records)
+                
+                # Format values for display
+                display_values = ", ".join(records[:3])  # Show first 3
+                if len(records) > 3:
+                    display_values += f" ... (+{len(records)-3} more)"
+                
+                record_table.add_row(
+                    record_type,
+                    str(len(records)),
+                    display_values,
+                    analysis["summary"]
+                )
+                
+                if analysis["insights"]:
+                    insights.extend(analysis["insights"])
+        
+        return {
+            "records": dns_records,
+            "meta_errors": meta_errors,
+            "record_table": record_table,
+            "insights": insights
+        }
+
+    def _analyze_record_type(self, record_type, records):
+        """Analyze specific DNS record types for security insights."""
+        analysis = {"summary": "Standard", "insights": []}
+        
+        if record_type == "A":
+            if len(records) > 1:
+                analysis["summary"] = "Load balanced"
+                analysis["insights"].append("🔵 Multiple A records detected - likely using load balancing")
+            # Check for cloud providers
+            cloud_ips = self._detect_cloud_providers(records)
+            if cloud_ips:
+                analysis["insights"].append(f"☁️ Cloud hosting detected: {', '.join(cloud_ips)}")
+                
+        elif record_type == "MX":
+            if len(records) > 1:
+                analysis["summary"] = "Redundant mail"
+                analysis["insights"].append("📧 Multiple MX records - good email redundancy")
+            # Analyze mail providers
+            providers = self._detect_mail_providers(records)
+            if providers:
+                analysis["insights"].append(f"📬 Mail services: {', '.join(providers)}")
+                
+        elif record_type == "NS":
+            if len(records) < 2:
+                analysis["summary"] = "⚠ Single NS"
+                analysis["insights"].append("🚨 Only one nameserver - single point of failure risk")
+            elif len(records) >= 4:
+                analysis["summary"] = "Excellent NS"
+                analysis["insights"].append("✅ Multiple nameservers - excellent DNS redundancy")
+                
+        elif record_type == "TXT":
+            txt_analysis = self._analyze_txt_records(records)
+            analysis["summary"] = txt_analysis["summary"]
+            analysis["insights"].extend(txt_analysis["insights"])
+            
+        elif record_type == "CNAME":
+            if len(records) > 1:
+                analysis["summary"] = "Multiple aliases"
+                analysis["insights"].append("🔗 Multiple CNAME records detected")
+                
+        return analysis
+
+    def _detect_cloud_providers(self, ip_records):
+        """Detect cloud providers from IP addresses."""
+        cloud_providers = []
+        
+        for ip in ip_records:
+            # This is a simplified detection - in real implementation would use IP ranges
+            if ip.startswith("13.") or ip.startswith("52.") or ip.startswith("54."):
+                cloud_providers.append("AWS")
+            elif ip.startswith("104.") and "cloudflare" in str(ip):
+                cloud_providers.append("Cloudflare")
+            elif ip.startswith("34.") or ip.startswith("35."):
+                cloud_providers.append("Google Cloud")
+                
+        return list(set(cloud_providers))
+
+    def _detect_mail_providers(self, mx_records):
+        """Detect mail service providers from MX records."""
+        providers = []
+        
+        for mx in mx_records:
+            mx_lower = str(mx).lower()
+            if "google" in mx_lower or "gmail" in mx_lower:
+                providers.append("Google Workspace")
+            elif "outlook" in mx_lower or "protection.outlook.com" in mx_lower:
+                providers.append("Microsoft 365")
+            elif "proofpoint" in mx_lower:
+                providers.append("Proofpoint (Security)")
+            elif "mimecast" in mx_lower:
+                providers.append("Mimecast (Security)")
+            elif "mailgun" in mx_lower:
+                providers.append("Mailgun")
+            elif "sendgrid" in mx_lower:
+                providers.append("SendGrid")
+                
+        return list(set(providers))
+
+    def _analyze_txt_records(self, txt_records):
+        """Analyze TXT records for various purposes."""
+        insights = []
+        categories = []
+        
+        for record in txt_records:
+            record_lower = record.lower()
+            
+            if "v=spf1" in record_lower:
+                categories.append("SPF")
+                insights.append("📧 SPF record found - email authentication configured")
+            elif "v=dmarc1" in record_lower:
+                categories.append("DMARC")
+                insights.append("🛡️ DMARC policy found - email spoofing protection")
+            elif "v=dkim1" in record_lower:
+                categories.append("DKIM")
+                insights.append("🔐 DKIM record found - email signature verification")
+            elif "google-site-verification" in record_lower:
+                categories.append("Google Verification")
+                insights.append("🔍 Google Search Console verification")
+            elif "facebook-domain-verification" in record_lower:
+                categories.append("Facebook Verification")
+                insights.append("📘 Facebook domain verification")
+            elif "_github-challenge" in record_lower:
+                categories.append("GitHub Verification")
+                insights.append("🐙 GitHub Pages verification")
+                
+        summary = ", ".join(categories) if categories else "General TXT"
+        
+        return {"summary": summary, "insights": insights}
+
+    def _perform_intelligent_subdomain_discovery(self):
+        """Perform intelligent subdomain discovery with source tracking."""
+        subdomains = set()
+        sources = []
+        insights = []
+        
+        # 1. Wordlist-based enumeration
+        if self.config.get("subdomains"):
+            console.print("\n[*] Performing targeted subdomain enumeration...")
+            found_subs = self.domain.enumerate_subdomains(
+                self.config["subdomains"], 
+                max_workers=self.config.get("max_workers", 10),
+                recursive=self.config.get("recursive", True)
+            )
+            if found_subs:
+                subdomains.update(found_subs)
+                sources.append(f"Wordlist enumeration ({len(found_subs)} found)")
+                
+        # 2. Certificate Transparency Logs
+        if self.config.get("ct_logs"):
+            console.print("  • Querying certificate transparency logs...")
+            ct_subs = self.domain.enumerate_ct_subdomains()
+            if ct_subs:
+                new_ct_subs = set(ct_subs) - subdomains
+                subdomains.update(ct_subs)
+                sources.append(f"Certificate transparency ({len(new_ct_subs)} new)")
+                
+        # 3. DNSDumpster
+        if self.config.get("dns_dumpster"):
+            console.print("  • Querying DNSDumpster...")
+            dd_subs = self.domain.enumerate_dns_dumpster()
+            if dd_subs:
+                new_dd_subs = set(dd_subs) - subdomains
+                subdomains.update(dd_subs)
+                sources.append(f"DNSDumpster ({len(new_dd_subs)} new)")
+                
+        # 4. Alternate DNS servers
+        if self.config.get("alternate_dns") and self.config.get("subdomains"):
+            console.print("  • Checking via alternate DNS servers...")
+            alt_subs = self.domain.enumerate_alternate_dns(self.config["subdomains"])
+            if alt_subs:
+                new_alt_subs = set(alt_subs) - subdomains
+                subdomains.update(alt_subs)
+                sources.append(f"Alternate DNS ({len(new_alt_subs)} new)")
+                
+        # 5. Zone transfer attempt
+        if self.config.get("zone_transfer"):
+            console.print("  • Attempting DNS zone transfer...")
+            axfr_subs = self.domain.attempt_zone_transfer()
+            if axfr_subs:
+                new_axfr_subs = set(axfr_subs) - subdomains
+                subdomains.update(axfr_subs)
+                sources.append(f"Zone transfer ({len(new_axfr_subs)} new)")
+                insights.append("🚨 Zone transfer successful - potential misconfiguration")
+            
+        # Analyze subdomain patterns
+        if subdomains:
+            pattern_insights = self._analyze_subdomain_patterns(list(subdomains))
+            insights.extend(pattern_insights)
+            
+        return {
+            "subdomains": list(subdomains),
+            "sources": sources,
+            "insights": insights
+        }
+
+    def _analyze_subdomain_patterns(self, subdomains):
+        """Analyze subdomain patterns for insights."""
+        insights = []
+        
+        # Count subdomain categories
+        categories = {
+            "dev/staging": 0,
+            "api/service": 0,
+            "cdn/static": 0,
+            "mail/mx": 0,
+            "admin/mgmt": 0
+        }
+        
+        for sub in subdomains:
+            sub_lower = sub.lower()
+            if any(word in sub_lower for word in ['dev', 'test', 'staging', 'stage']):
+                categories["dev/staging"] += 1
+            elif any(word in sub_lower for word in ['api', 'service', 'ws', 'rest']):
+                categories["api/service"] += 1
+            elif any(word in sub_lower for word in ['cdn', 'static', 'assets', 'img']):
+                categories["cdn/static"] += 1
+            elif any(word in sub_lower for word in ['mail', 'mx', 'smtp', 'imap']):
+                categories["mail/mx"] += 1
+            elif any(word in sub_lower for word in ['admin', 'manage', 'panel', 'control']):
+                categories["admin/mgmt"] += 1
+                
+        # Generate insights based on patterns
+        for category, count in categories.items():
+            if count > 0:
+                if category == "dev/staging" and count > 2:
+                    insights.append(f"🔧 Multiple development environments detected ({count} subdomains)")
+                elif category == "admin/mgmt" and count > 0:
+                    insights.append(f"⚠️ Administrative interfaces found ({count} subdomains) - ensure proper access controls")
+                elif category == "api/service" and count > 3:
+                    insights.append(f"🔌 Service-oriented architecture detected ({count} API endpoints)")
+                    
+        return insights
+
+    def _create_subdomain_table(self, subdomains):
+        """Create an organized subdomain table with categorization."""
+        table = Table(title="Discovered Subdomains")
+        table.add_column("Subdomain", style="cyan", no_wrap=True)
+        table.add_column("Category", style="green")
+        table.add_column("Risk Level", style="yellow", justify="center")
+        
+        for sub in sorted(subdomains):
+            category, risk = self._categorize_subdomain(sub)
+            risk_color = {"Low": "green", "Medium": "yellow", "High": "red"}.get(risk, "white")
+            table.add_row(sub, category, f"[{risk_color}]{risk}[/{risk_color}]")
+            
+        return table
+
+    def _categorize_subdomain(self, subdomain):
+        """Categorize a subdomain and assess risk level."""
+        sub_lower = subdomain.lower()
+        
+        # High-risk subdomains
+        if any(word in sub_lower for word in ['admin', 'panel', 'manage', 'control', 'dashboard']):
+            return "Administrative", "High"
+        elif any(word in sub_lower for word in ['dev', 'test', 'staging', 'debug']):
+            return "Development", "Medium"
+        elif any(word in sub_lower for word in ['api', 'service', 'ws', 'rest']):
+            return "API/Service", "Medium"
+        elif any(word in sub_lower for word in ['mail', 'mx', 'smtp', 'imap', 'pop']):
+            return "Email", "Low"
+        elif any(word in sub_lower for word in ['cdn', 'static', 'assets', 'img', 'css', 'js']):
+            return "Static/CDN", "Low"
+        elif any(word in sub_lower for word in ['www', 'web', 'site']):
+            return "Web Frontend", "Low"
+        else:
+            return "General", "Low"
+
+    def _create_dns_security_summary(self, dns_records, subdomain_count, wildcard_found):
+        """Create a comprehensive DNS security summary."""
+        summary_table = Table(title="DNS Security Summary")
+        summary_table.add_column("Assessment Area", style="cyan")
+        summary_table.add_column("Status", justify="center")
+        summary_table.add_column("Details", style="dim")
+        
+        # DNS Redundancy
+        ns_count = len(dns_records.get("NS", []))
+        if ns_count >= 3:
+            ns_status = "[green]✓ Excellent[/green]"
+            ns_detail = f"{ns_count} nameservers configured"
+        elif ns_count == 2:
+            ns_status = "[yellow]⚠ Good[/yellow]"  
+            ns_detail = f"{ns_count} nameservers configured"
+        else:
+            ns_status = "[red]✗ Poor[/red]"
+            ns_detail = f"Only {ns_count} nameserver(s) - SPOF risk"
+            
+        summary_table.add_row("DNS Redundancy", ns_status, ns_detail)
+        
+        # Wildcard Configuration
+        if wildcard_found:
+            wc_status = "[yellow]⚠ Present[/yellow]"
+            wc_detail = "Review wildcard necessity"
+        else:
+            wc_status = "[green]✓ Secure[/green]"
+            wc_detail = "No wildcard records"
+            
+        summary_table.add_row("Wildcard Records", wc_status, wc_detail)
+        
+        # Subdomain Exposure
+        if subdomain_count > 20:
+            sub_status = "[yellow]⚠ High[/yellow]"
+            sub_detail = f"{subdomain_count} subdomains - review exposure"
+        elif subdomain_count > 5:
+            sub_status = "[blue]ℹ Medium[/blue]"
+            sub_detail = f"{subdomain_count} subdomains discovered"
+        else:
+            sub_status = "[green]✓ Low[/green]"
+            sub_detail = f"{subdomain_count} subdomains discovered"
+            
+        summary_table.add_row("Subdomain Exposure", sub_status, sub_detail)
+        
+        # Mail Infrastructure (basic check)
+        mx_records = dns_records.get("MX", [])
+        if mx_records:
+            mail_status = "[green]✓ Configured[/green]"
+            mail_detail = f"{len(mx_records)} mail server(s)"
+        else:
+            mail_status = "[blue]ℹ None[/blue]"
+            mail_detail = "No mail servers configured"
+            
+        summary_table.add_row("Mail Infrastructure", mail_status, mail_detail)
+        
+        return summary_table
+
+    def _create_web_security_summary(self, ssl_results):
+        """Create web security summary from SSL results."""
+        summary = {}
+        
+        if ssl_results.get("valid"):
+            summary["ssl_status"] = "valid"
+            summary["ssl_details"] = {
+                "issuer": ssl_results.get("issuer", "Unknown"),
+                "expires": ssl_results.get("expires", "Unknown")
+            }
+        else:
+            summary["ssl_status"] = "invalid"
+            summary["ssl_error"] = ssl_results.get("error", "Unknown error")
+            
+        return summary
+
+    def _analyze_security_headers_summary(self, security_results):
+        """Analyze security headers for summary inclusion."""
+        summary = {}
+        
+        if security_results:
+            summary["headers_grade"] = security_results.get("grade", "F")
+            summary["headers_score"] = security_results.get("score", 0)
+            summary["critical_missing"] = security_results.get("missing_critical", [])
+            summary["recommendations"] = security_results.get("recommendations", [])
+            
+        return summary
+
+    def _create_final_web_security_summary(self, web_summary):
+        """Create final comprehensive web security summary table."""
+        summary_table = Table(title="Web Security Assessment")
+        summary_table.add_column("Security Area", style="cyan")
+        summary_table.add_column("Status", justify="center")
+        summary_table.add_column("Details", style="dim")
+        summary_table.add_column("Recommendations", style="yellow", max_width=40)
+        
+        # SSL/TLS Assessment
+        if web_summary.get("ssl_status") == "valid":
+            ssl_status = "[green]✓ Valid[/green]"
+            ssl_details = f"Issuer: {web_summary['ssl_details']['issuer'][:30]}..."
+            ssl_recommendations = "Monitor expiration date"
+        else:
+            ssl_status = "[red]✗ Invalid[/red]"
+            ssl_details = f"Error: {web_summary.get('ssl_error', 'Unknown')}"
+            ssl_recommendations = "Fix SSL certificate issues immediately"
+            
+        summary_table.add_row("SSL/TLS Certificate", ssl_status, ssl_details, ssl_recommendations)
+        
+        # Security Headers Assessment
+        if "headers_grade" in web_summary:
+            grade = web_summary["headers_grade"]
+            score = web_summary["headers_score"]
+            
+            if grade in ["A+", "A"]:
+                headers_status = f"[green]✓ Excellent ({grade})[/green]"
+                headers_recommendations = "Maintain current security posture"
+            elif grade in ["B", "C"]:
+                headers_status = f"[yellow]⚠ Good ({grade})[/yellow]"
+                headers_recommendations = "Consider implementing missing headers"
+            else:
+                headers_status = f"[red]✗ Poor ({grade})[/red]"
+                headers_recommendations = "Implement critical security headers"
+                
+            headers_details = f"Score: {score}/100"
+            if web_summary.get("critical_missing"):
+                headers_details += f", Missing: {', '.join(web_summary['critical_missing'][:2])}"
+                
+            summary_table.add_row("Security Headers", headers_status, headers_details, headers_recommendations)
+        else:
+            summary_table.add_row("Security Headers", "[blue]ℹ Skipped[/blue]", "Quick mode enabled", "Run full scan for analysis")
+        
+        # Overall Web Security Rating
+        overall_rating = self._calculate_overall_web_security_rating(web_summary)
+        summary_table.add_row("Overall Rating", overall_rating["status"], overall_rating["details"], overall_rating["recommendation"])
+        
+        return summary_table
+
+    def _calculate_overall_web_security_rating(self, web_summary):
+        """Calculate overall web security rating."""
+        score = 0
+        max_score = 100
+        
+        # SSL contributes 40% of score
+        if web_summary.get("ssl_status") == "valid":
+            score += 40
+        
+        # Headers contribute 60% of score
+        if "headers_score" in web_summary:
+            score += (web_summary["headers_score"] * 0.6)
+        else:
+            # If headers weren't checked, give partial credit for SSL
+            max_score = 40
+            
+        percentage = (score / max_score) * 100
+        
+        if percentage >= 90:
+            return {
+                "status": "[green]✓ Excellent[/green]",
+                "details": f"Security score: {percentage:.0f}%",
+                "recommendation": "Maintain current security practices"
+            }
+        elif percentage >= 70:
+            return {
+                "status": "[yellow]⚠ Good[/yellow]",
+                "details": f"Security score: {percentage:.0f}%",
+                "recommendation": "Address remaining security gaps"
+            }
+        elif percentage >= 50:
+            return {
+                "status": "[orange]⚠ Fair[/orange]",
+                "details": f"Security score: {percentage:.0f}%",
+                "recommendation": "Significant security improvements needed"
+            }
+        else:
+            return {
+                "status": "[red]✗ Poor[/red]",
+                "details": f"Security score: {percentage:.0f}%",
+                "recommendation": "Immediate security remediation required"
+            }
 
 
 class SSLValidator:
