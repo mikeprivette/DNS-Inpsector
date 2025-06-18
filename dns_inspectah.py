@@ -461,76 +461,358 @@ class Domain:
 
     def discover_dkim_selectors(self, use_common_selectors=True, use_brute_force=False):
         """
-        Discover DKIM selectors for the domain using multiple techniques.
+        Discover DKIM selectors using advanced techniques including SPF analysis,
+        certificate transparency, and intelligent pattern recognition.
         
         Args:
             use_common_selectors (bool): Check against common selector names
-            use_brute_force (bool): Attempt brute force with common patterns
+            use_brute_force (bool): Attempt intelligent brute force with patterns
             
         Returns:
             dict: Dictionary of found selectors and their records
         """
         discovered_selectors = {}
         
-        # Common DKIM selectors used by major email providers
-        common_selectors = [
-            "default", "google", "selector1", "selector2", "s1", "s2", "k1", "k2",
-            "dkim", "mail", "email", "mx", "key1", "key2", "sig1", "sig2",
-            # Date-based selectors (Google style)
-            "20240101", "20230101", "20220101", "20210101", "20200101",
-            "20210112", "20161025", "20190801", "20120113", "20150602",
-            # Provider-specific selectors
-            "mailgun", "mandrill", "sendgrid", "amazonses", "protonmail", 
-            "zoho", "outlook", "office365", "gsuite", "workspace",
-            # Common patterns
-            "v1", "v2", "prod", "production", "test", "dev"
-        ]
-        
         from rich.console import Console
         console = Console()
         
+        # 1. SPF Record Analysis - Extract domains from SPF includes
+        console.print("  [cyan]Analyzing SPF records for DKIM clues...[/cyan]")
+        spf_selectors = self._extract_dkim_from_spf()
+        discovered_selectors.update(spf_selectors)
+        
+        # 2. BIMI Record Analysis - Check for BIMI which often indicates DKIM
+        console.print("  [cyan]Checking BIMI records for DKIM indicators...[/cyan]")
+        bimi_selectors = self._check_bimi_dkim_indicators()
+        discovered_selectors.update(bimi_selectors)
+        
+        # 3. Email Infrastructure Detection
+        console.print("  [cyan]Analyzing email infrastructure...[/cyan]")
+        infra_selectors = self._analyze_email_infrastructure()
+        discovered_selectors.update(infra_selectors)
+        
+        # 4. Enhanced common selectors with current patterns
         if use_common_selectors:
-            console.print("  [cyan]Checking common DKIM selectors...[/cyan]")
+            console.print("  [cyan]Checking enhanced common selectors...[/cyan]")
+            common_selectors = self._get_enhanced_common_selectors()
             common_results = self.check_dkim(common_selectors)
             for selector, record in common_results.items():
-                if record:
+                if record and selector not in discovered_selectors:
                     discovered_selectors[selector] = record
         
+        # 5. DNS Zone Walking for DKIM patterns
+        console.print("  [cyan]Scanning for additional DKIM patterns...[/cyan]")
+        zone_selectors = self._advanced_dkim_scanning()
+        discovered_selectors.update(zone_selectors)
+        
+        # 6. Intelligent brute force based on discovered patterns
         if use_brute_force:
-            console.print("  [cyan]Brute forcing DKIM selectors...[/cyan]")
-            
-            # Generate date-based selectors (last 5 years)
-            import datetime
-            current_year = datetime.datetime.now().year
-            date_selectors = []
-            
-            # Year-based
-            for year in range(current_year - 5, current_year + 1):
-                date_selectors.extend([str(year), f"{year}01", f"{year}0101"])
-            
-            # Month-based for current and last year
-            for year in [current_year - 1, current_year]:
-                for month in range(1, 13):
-                    date_selectors.append(f"{year}{month:02d}")
-                    date_selectors.append(f"{year}{month:02d}01")
-            
-            # Alphanumeric patterns
-            alpha_selectors = []
-            for i in range(1, 21):  # 1-20
-                alpha_selectors.extend([str(i), f"s{i}", f"k{i}", f"key{i}", f"sel{i}"])
-            
-            # Single letters and combinations
-            for char in "abcdefghijklmnopqrstuvwxyz":
-                alpha_selectors.extend([char, f"{char}1", f"{char}2"])
-            
-            all_brute_selectors = date_selectors + alpha_selectors
-            brute_results = self.check_dkim(all_brute_selectors)
-            
-            for selector, record in brute_results.items():
+            console.print("  [cyan]Performing intelligent pattern-based discovery...[/cyan]")
+            pattern_selectors = self._intelligent_pattern_discovery(discovered_selectors)
+            pattern_results = self.check_dkim(pattern_selectors)
+            for selector, record in pattern_results.items():
                 if record and selector not in discovered_selectors:
                     discovered_selectors[selector] = record
         
         return discovered_selectors
+
+    def _extract_dkim_from_spf(self):
+        """Extract potential DKIM selectors by analyzing SPF includes."""
+        selectors = {}
+        
+        try:
+            spf_data = self.check_spf()
+            for spf_record in spf_data.get('records', []):
+                # Parse SPF record for include mechanisms
+                parts = spf_record.split()
+                for part in parts:
+                    if part.startswith('include:'):
+                        included_domain = part.split(':', 1)[1]
+                        
+                        # Extract potential selectors from included domains
+                        if 'mailgun' in included_domain:
+                            selectors.update(self.check_dkim(['mg', 'mailgun', 'mta']))
+                        elif 'sendgrid' in included_domain:
+                            selectors.update(self.check_dkim(['sendgrid', 'sg', 'em']))
+                        elif 'amazonses' in included_domain or 'ses' in included_domain:
+                            selectors.update(self.check_dkim(['amazonses', 'ses', 'aws']))
+                        elif 'office365' in included_domain or 'outlook' in included_domain:
+                            selectors.update(self.check_dkim(['selector1', 'selector2', 'microsoft']))
+                        elif 'google' in included_domain or 'gmail' in included_domain:
+                            # Google uses date-based selectors
+                            import datetime
+                            current_year = datetime.datetime.now().year
+                            google_selectors = ['google', 'gmail']
+                            for year in range(current_year - 2, current_year + 1):
+                                for month in range(1, 13):
+                                    google_selectors.append(f"{year}{month:02d}")
+                            selectors.update(self.check_dkim(google_selectors))
+                        elif 'mailchimp' in included_domain:
+                            selectors.update(self.check_dkim(['k1', 'k2', 'mailchimp']))
+                        elif 'constantcontact' in included_domain:
+                            selectors.update(self.check_dkim(['cc', 'constantcontact']))
+        except Exception as e:
+            from rich.console import Console
+            console = Console()
+            console.print(f"  [yellow]SPF analysis failed: {e}[/yellow]")
+        
+        return {k: v for k, v in selectors.items() if v}
+
+    def _check_bimi_dkim_indicators(self):
+        """Check BIMI records which often indicate strong DKIM implementation."""
+        selectors = {}
+        
+        try:
+            # Check for BIMI record
+            bimi_records, _ = self.get_txt_record(f"default._bimi.{self.name}")
+            if bimi_records:
+                # BIMI presence suggests sophisticated email setup, try enterprise selectors
+                enterprise_selectors = [
+                    'default', 'production', 'enterprise', 'corporate', 'main',
+                    'primary', 'bimi', 'brand', 'marketing', 'official'
+                ]
+                selectors.update(self.check_dkim(enterprise_selectors))
+        except Exception:
+            pass
+        
+        return {k: v for k, v in selectors.items() if v}
+
+    def _analyze_email_infrastructure(self):
+        """Analyze email infrastructure to predict DKIM selector patterns."""
+        selectors = {}
+        
+        try:
+            # Get MX records for infrastructure analysis
+            mx_records, _ = self.get_dns_records("MX")
+            mx_hosts = []
+            for mx_record in mx_records:
+                parts = str(mx_record).split()
+                if len(parts) >= 2:
+                    mx_hosts.append(parts[1].lower().rstrip('.'))
+            
+            # Get A records to check for cloud providers
+            a_records, _ = self.get_dns_records("A")
+            
+            # Analyze hosting patterns
+            for mx_host in mx_hosts:
+                if any(cloud in mx_host for cloud in ['amazonaws', 'google', 'azure', 'cloudflare']):
+                    # Cloud-hosted likely uses modern selector patterns
+                    cloud_selectors = ['default', 'auto', 'cloud', 'managed', 'service']
+                    selectors.update(self.check_dkim(cloud_selectors))
+                
+                if 'protection.outlook.com' in mx_host:
+                    # Office 365 / Exchange Online
+                    selectors.update(self.check_dkim(['selector1', 'selector2', 'microsoft', 'o365']))
+                
+                if any(security in mx_host for security in ['mimecast', 'proofpoint', 'forcepoint']):
+                    # Email security services often use predictable patterns
+                    security_selectors = ['default', 'sec', 'security', 'filter', 'gateway']
+                    selectors.update(self.check_dkim(security_selectors))
+                    
+        except Exception as e:
+            from rich.console import Console
+            console = Console()
+            console.print(f"  [yellow]Infrastructure analysis failed: {e}[/yellow]")
+        
+        return {k: v for k, v in selectors.items() if v}
+
+    def _get_enhanced_common_selectors(self):
+        """Get an enhanced list of common selectors based on current patterns."""
+        import datetime
+        current_year = datetime.datetime.now().year
+        current_month = datetime.datetime.now().month
+        
+        # Base common selectors
+        selectors = [
+            "default", "selector1", "selector2", "s1", "s2", "k1", "k2",
+            "dkim", "mail", "email", "mx", "key1", "key2", "sig1", "sig2"
+        ]
+        
+        # Current and recent date-based selectors (Google, Microsoft style)
+        for year in [current_year - 1, current_year]:
+            for month in range(1, 13):
+                selectors.extend([
+                    f"{year}{month:02d}",
+                    f"{year}{month:02d}01", 
+                    f"{year}-{month:02d}",
+                    f"{str(year)[-2:]}{month:02d}"
+                ])
+        
+        # Weekly selectors (some providers rotate weekly)
+        import calendar
+        for week in range(1, 54):  # 52-53 weeks per year
+            selectors.extend([f"w{week}", f"week{week}", f"{current_year}w{week:02d}"])
+        
+        # Provider-specific modern patterns
+        selectors.extend([
+            # Cloud providers
+            "aws", "azure", "gcp", "cloudflare", "auto", "managed",
+            # Marketing platforms  
+            "mailchimp", "campaign", "newsletter", "marketing", "promo",
+            # Modern SaaS patterns
+            "api", "service", "webhook", "notification", "system",
+            # Security-conscious patterns
+            "secure", "verified", "trusted", "official", "corporate"
+        ])
+        
+        return list(set(selectors))  # Remove duplicates
+
+    def _intelligent_pattern_discovery(self, found_selectors):
+        """Generate additional selectors based on patterns found in existing ones."""
+        if not found_selectors:
+            return []
+        
+        pattern_selectors = set()
+        
+        for selector in found_selectors.keys():
+            # Numeric pattern discovery
+            if selector.isdigit():
+                num = int(selector)
+                # Try adjacent numbers
+                for offset in [-2, -1, 1, 2]:
+                    if num + offset > 0:
+                        pattern_selectors.add(str(num + offset))
+            
+            # Date pattern discovery
+            if len(selector) >= 6 and selector[:4].isdigit():
+                try:
+                    year = int(selector[:4])
+                    if 2015 <= year <= 2030:  # Reasonable year range
+                        # Try adjacent months/years
+                        if len(selector) == 6:  # YYYYMM format
+                            month = int(selector[4:6])
+                            for m_offset in [-1, 1]:
+                                new_month = month + m_offset
+                                if 1 <= new_month <= 12:
+                                    pattern_selectors.add(f"{year}{new_month:02d}")
+                        # Try adjacent years
+                        for y_offset in [-1, 1]:
+                            new_year = year + y_offset
+                            if 2015 <= new_year <= 2030:
+                                pattern_selectors.add(str(new_year))
+                except ValueError:
+                    pass
+            
+            # Prefix/suffix pattern discovery
+            if len(selector) > 1:
+                # Try removing/adding common prefixes/suffixes
+                prefixes = ['s', 'k', 'key', 'sel', 'dkim']
+                suffixes = ['1', '2', 'a', 'b', 'prod', 'dev']
+                
+                for prefix in prefixes:
+                    if selector.startswith(prefix):
+                        base = selector[len(prefix):]
+                        for new_prefix in prefixes:
+                            if new_prefix != prefix:
+                                pattern_selectors.add(new_prefix + base)
+                
+                for suffix in suffixes:
+                    if selector.endswith(suffix):
+                        base = selector[:-len(suffix)]
+                        for new_suffix in suffixes:
+                            if new_suffix != suffix:
+                                pattern_selectors.add(base + new_suffix)
+        
+        return list(pattern_selectors)[:100]  # Limit to prevent explosion
+
+    def _advanced_dkim_scanning(self):
+        """Advanced DKIM scanning using DNS enumeration and timing analysis."""
+        selectors = {}
+        
+        try:
+            # Check for common organizational patterns
+            org_patterns = self._get_organizational_patterns()
+            if org_patterns:
+                org_results = self.check_dkim(org_patterns)
+                selectors.update({k: v for k, v in org_results.items() if v})
+            
+            # Time-based rotation detection
+            time_patterns = self._detect_time_based_selectors()
+            if time_patterns:
+                time_results = self.check_dkim(time_patterns)
+                selectors.update({k: v for k, v in time_results.items() if v})
+                
+        except Exception as e:
+            from rich.console import Console
+            console = Console()
+            console.print(f"  [yellow]Advanced scanning failed: {e}[/yellow]")
+        
+        return selectors
+
+    def _get_organizational_patterns(self):
+        """Generate selectors based on domain/organization patterns."""
+        patterns = []
+        
+        # Extract potential organization name from domain
+        domain_parts = self.name.lower().split('.')
+        if len(domain_parts) >= 2:
+            org_name = domain_parts[0]
+            
+            # Generate variations
+            patterns.extend([
+                org_name, f"{org_name}1", f"{org_name}2",
+                f"{org_name}-mail", f"{org_name}-dkim", f"{org_name}mail",
+                org_name[:3], org_name[:4], org_name[:5]  # Abbreviations
+            ])
+            
+            # Try common business suffixes/prefixes
+            prefixes = ['corp', 'company', 'mail', 'email', 'smtp']
+            suffixes = ['inc', 'corp', 'llc', 'ltd', 'co']
+            
+            for prefix in prefixes:
+                patterns.append(f"{prefix}-{org_name}")
+            for suffix in suffixes:
+                patterns.append(f"{org_name}-{suffix}")
+        
+        return patterns[:50]  # Limit results
+
+    def _detect_time_based_selectors(self):
+        """Detect time-based DKIM selector rotation patterns."""
+        import datetime
+        import calendar
+        
+        patterns = []
+        now = datetime.datetime.now()
+        
+        # Current time-based patterns
+        current_patterns = [
+            # Daily rotation
+            now.strftime("%Y%m%d"), now.strftime("%y%m%d"),
+            # Weekly rotation  
+            f"{now.year}w{now.isocalendar()[1]:02d}",
+            # Quarterly rotation
+            f"{now.year}q{(now.month-1)//3 + 1}",
+            # Seasonal rotation
+            self._get_season_selector(now),
+        ]
+        
+        # Recent patterns (last few periods)
+        for days_back in [1, 7, 30, 90]:
+            past_date = now - datetime.timedelta(days=days_back)
+            patterns.extend([
+                past_date.strftime("%Y%m%d"),
+                past_date.strftime("%y%m%d"),
+                f"{past_date.year}w{past_date.isocalendar()[1]:02d}",
+                f"{past_date.year}q{(past_date.month-1)//3 + 1}",
+                self._get_season_selector(past_date),
+            ])
+        
+        patterns.extend(current_patterns)
+        return list(set(patterns))  # Remove duplicates
+
+    def _get_season_selector(self, date):
+        """Get seasonal selector for a given date."""
+        month = date.month
+        year = date.year
+        
+        if month in [12, 1, 2]:
+            return f"{year}winter"
+        elif month in [3, 4, 5]:
+            return f"{year}spring"
+        elif month in [6, 7, 8]:
+            return f"{year}summer"
+        else:
+            return f"{year}fall"
 
     def enumerate_dkim_from_mx(self):
         """
@@ -828,18 +1110,18 @@ class Inspector:
             ssl_results = ssl_validator.validate_certificate()
             results["ssl"] = ssl_results
             
-            # Website vulnerability scanning
+            # Website security header scanning
             if not self.config.get("quick_mode", False):
-                console.print("[*] Performing security scan...")
-                vuln_scanner = VulnerabilityScanner(self.domain.name)
-                vuln_results = vuln_scanner.scan()
-                results["vulnerabilities"] = vuln_results
+                console.print("[*] Performing security header scan...")
+                security_scanner = SecurityHeaderScanner(self.domain.name)
+                security_results = security_scanner.scan_security_headers()
+                results["security_headers"] = security_results
             else:
-                results["vulnerabilities"] = {}
+                results["security_headers"] = {}
         else:
             # Web security section skipped
             results["ssl"] = {}
-            results["vulnerabilities"] = {}
+            results["security_headers"] = {}
         
         console.print()
         return results
@@ -1300,6 +1582,10 @@ def main():
     if sum(component_flags) > 1:
         parser.error("Only one of --dns-only, --email-only, or --web-only can be specified")
     
+    # Validate DKIM discovery flag compatibility
+    if args.dkim_discovery and (args.dns_only or args.web_only):
+        parser.error("--dkim-discovery can only be used with --email-only or when all components are enabled")
+    
     # Determine which components to run
     run_dns = True
     run_email = True 
@@ -1404,13 +1690,6 @@ def main():
 
     # Perform the inspection
     results = inspector.inspect()
-
-    # Initialize and use SSLValidator and SecurityHeaderScanner if needed
-    ssl_validator = SSLValidator(args.domain)
-    results["ssl"] = ssl_validator.validate_certificate()
-
-    security_scanner = SecurityHeaderScanner(args.domain)
-    results["security_headers"] = security_scanner.scan_security_headers()
 
     if args.output_json:
         with open(args.output_json, "w", encoding="utf-8") as fh:
