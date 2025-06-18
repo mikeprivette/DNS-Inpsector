@@ -459,6 +459,126 @@ class Domain:
             results[sel] = found
         return results
 
+    def discover_dkim_selectors(self, use_common_selectors=True, use_brute_force=False):
+        """
+        Discover DKIM selectors for the domain using multiple techniques.
+        
+        Args:
+            use_common_selectors (bool): Check against common selector names
+            use_brute_force (bool): Attempt brute force with common patterns
+            
+        Returns:
+            dict: Dictionary of found selectors and their records
+        """
+        discovered_selectors = {}
+        
+        # Common DKIM selectors used by major email providers
+        common_selectors = [
+            "default", "google", "selector1", "selector2", "s1", "s2", "k1", "k2",
+            "dkim", "mail", "email", "mx", "key1", "key2", "sig1", "sig2",
+            # Date-based selectors (Google style)
+            "20240101", "20230101", "20220101", "20210101", "20200101",
+            "20210112", "20161025", "20190801", "20120113", "20150602",
+            # Provider-specific selectors
+            "mailgun", "mandrill", "sendgrid", "amazonses", "protonmail", 
+            "zoho", "outlook", "office365", "gsuite", "workspace",
+            # Common patterns
+            "v1", "v2", "prod", "production", "test", "dev"
+        ]
+        
+        from rich.console import Console
+        console = Console()
+        
+        if use_common_selectors:
+            console.print("  [cyan]Checking common DKIM selectors...[/cyan]")
+            common_results = self.check_dkim(common_selectors)
+            for selector, record in common_results.items():
+                if record:
+                    discovered_selectors[selector] = record
+        
+        if use_brute_force:
+            console.print("  [cyan]Brute forcing DKIM selectors...[/cyan]")
+            
+            # Generate date-based selectors (last 5 years)
+            import datetime
+            current_year = datetime.datetime.now().year
+            date_selectors = []
+            
+            # Year-based
+            for year in range(current_year - 5, current_year + 1):
+                date_selectors.extend([str(year), f"{year}01", f"{year}0101"])
+            
+            # Month-based for current and last year
+            for year in [current_year - 1, current_year]:
+                for month in range(1, 13):
+                    date_selectors.append(f"{year}{month:02d}")
+                    date_selectors.append(f"{year}{month:02d}01")
+            
+            # Alphanumeric patterns
+            alpha_selectors = []
+            for i in range(1, 21):  # 1-20
+                alpha_selectors.extend([str(i), f"s{i}", f"k{i}", f"key{i}", f"sel{i}"])
+            
+            # Single letters and combinations
+            for char in "abcdefghijklmnopqrstuvwxyz":
+                alpha_selectors.extend([char, f"{char}1", f"{char}2"])
+            
+            all_brute_selectors = date_selectors + alpha_selectors
+            brute_results = self.check_dkim(all_brute_selectors)
+            
+            for selector, record in brute_results.items():
+                if record and selector not in discovered_selectors:
+                    discovered_selectors[selector] = record
+        
+        return discovered_selectors
+
+    def enumerate_dkim_from_mx(self):
+        """
+        Attempt to discover DKIM selectors based on MX record patterns.
+        Some organizations use predictable DKIM selector patterns based on their MX records.
+        """
+        discovered_selectors = {}
+        
+        try:
+            # Get MX records to infer potential DKIM selector patterns
+            mx_records, _ = self.get_dns_records("MX")
+            if mx_records:
+                mx_hosts = []
+                for mx_record in mx_records:
+                    # Extract hostname from MX record (format: "priority hostname")
+                    parts = str(mx_record).split()
+                    if len(parts) >= 2:
+                        hostname = parts[1].rstrip('.')
+                        mx_hosts.append(hostname)
+                
+                # Generate potential selectors based on MX patterns
+                potential_selectors = []
+                for mx_host in mx_hosts:
+                    # Extract provider patterns
+                    if "google" in mx_host.lower():
+                        potential_selectors.extend(["google", "googleapis", "gapps"])
+                    elif "outlook" in mx_host.lower() or "microsoft" in mx_host.lower():
+                        potential_selectors.extend(["selector1", "selector2", "microsoft"])
+                    elif "amazon" in mx_host.lower() or "ses" in mx_host.lower():
+                        potential_selectors.extend(["amazonses", "ses"])
+                    elif "mailgun" in mx_host.lower():
+                        potential_selectors.extend(["mailgun", "mg"])
+                    elif "sendgrid" in mx_host.lower():
+                        potential_selectors.extend(["sendgrid", "sg"])
+                
+                if potential_selectors:
+                    mx_results = self.check_dkim(potential_selectors)
+                    for selector, record in mx_results.items():
+                        if record:
+                            discovered_selectors[selector] = record
+        
+        except Exception as e:
+            from rich.console import Console
+            console = Console()
+            console.print(f"  [yellow]Warning: Could not analyze MX records for DKIM discovery: {e}[/yellow]")
+        
+        return discovered_selectors
+
 
 class Inspector:
     """
@@ -474,137 +594,253 @@ class Inspector:
         """
         Perform the inspection process for the domain.
         """
-        console.print(f"\n[bold]* Inspecting domain: {self.domain.name}[/bold]\n")
-        results = {"domain": self.domain.name}
-
-        # Check for wildcard DNS records across all configured types
-        console.print("[*] Checking for wildcard DNS records...")
-        wildcard = self.domain.check_wildcard_records(self.config["dns_record_types"])
-        results["wildcard"] = wildcard
-        if wildcard:
-            console.print("    [bold red][!] Wildcard DNS records found.[/bold red]\n")
+        console.print(f"\n[bold]* Inspecting domain: {self.domain.name}[/bold]")
+        
+        # Display enabled components
+        components = []
+        if self.config.get("run_dns", True):
+            components.append("DNS Discovery")
+        if self.config.get("run_email", True):
+            components.append("Email Security")
+        if self.config.get("run_web", True):
+            components.append("Web Security")
+        
+        if self.config.get("quick_mode", False):
+            console.print(f"[cyan]Running quick scan: {', '.join(components)}[/cyan]\n")
         else:
-            console.print("    [green][ ] No wildcard DNS records found.[/green]\n")
+            console.print(f"[cyan]Running components: {', '.join(components)}[/cyan]\n")
+        
+        results = {"domain": self.domain.name, "components": components}
 
-        subdomains = []
-        if self.config.get("subdomains"):
-            console.print("[*] Enumerating subdomains...")
-            found_subs = self.domain.enumerate_subdomains(
-                self.config["subdomains"], 
-                max_workers=self.config.get("max_workers", 10),
-                recursive=self.config.get("recursive", True)
-            )
-            subdomains.extend(found_subs)
+        # DNS Discovery Section
+        if self.config.get("run_dns", True):
+            console.print("[bold blue]===== DNS DISCOVERY =====[/bold blue]")
             
-            # Try alternate DNS servers for additional coverage
-            if self.config.get("alternate_dns", False):
-                console.print("[*] Checking subdomains via alternate DNS servers...")
-                alt_subs = self.domain.enumerate_alternate_dns(self.config["subdomains"])
-                subdomains.extend(alt_subs)
-                
-        if self.config.get("ct_logs"):
-            console.print(
-                "[*] Pulling subdomains from certificate transparency logs..."
-            )
-            ct_subs = self.domain.enumerate_ct_subdomains()
-            subdomains.extend(ct_subs)
-            
-        if self.config.get("dns_dumpster", False):
-            console.print("[*] Querying DNSDumpster for additional subdomains...")
-            dd_subs = self.domain.enumerate_dns_dumpster()
-            subdomains.extend(dd_subs)
-            
-        if self.config.get("zone_transfer"):
-            console.print("[*] Attempting zone transfer...")
-            axfr_subs = self.domain.attempt_zone_transfer()
-            subdomains.extend(axfr_subs)
-            if not axfr_subs:
-                console.print("    Zone transfer failed or no records found.\n")
-
-        subdomain_count = len(set(subdomains))
-        results["subdomains"] = sorted(set(subdomains))
-        if subdomains:
-            table = Table(title="Discovered subdomains")
-            table.add_column("Subdomain", style="cyan")
-            for sub in sorted(set(subdomains)):
-                table.add_row(sub)
-            console.print(table)
-        elif self.config.get("subdomains") or self.config.get("zone_transfer"):
-            console.print("    No subdomains found.\n")
-
-        console.print("[*] Gathering DNS records...\n")
-        meta_errors = []
-        record_counts = {}
-        dns_records = {}
-        record_table = Table(title="DNS Records")
-        record_table.add_column("Type", style="green")
-        record_table.add_column("Value", style="magenta")
-        for record_type in self.config["dns_record_types"]:
-            records, meta_error = self.domain.get_dns_records(record_type)
-            if meta_error:
-                meta_errors.append(record_type)
-                continue
-            record_counts[record_type] = len(records)
-            dns_records[record_type] = records
-            for record in records:
-                record_table.add_row(record_type, record)
-        if record_table.row_count:
-            console.print(record_table)
-        if meta_errors:
-            console.print(
-                f"[yellow]DNS metaqueries are not allowed for: {', '.join(meta_errors)}[/yellow]\n"
-            )
-
-        results["dns_records"] = dns_records
-        results["meta_errors"] = meta_errors
-        if record_counts or subdomain_count:
-            summary = Table(title="Summary")
-            summary.add_column("Record Type", style="green")
-            summary.add_column("Count", style="magenta")
-            for rtype, count in record_counts.items():
-                summary.add_row(rtype, str(count))
-            if self.config.get("subdomains") or self.config.get("zone_transfer"):
-                summary.add_row("Subdomains found", str(subdomain_count))
-            console.print(summary)
-
-        console.print("[*] Checking email authentication records...")
-        dmarc = self.domain.check_dmarc()
-        results["dmarc"] = dmarc
-        if not dmarc["present"]:
-            console.print("  [bold red]! No DMARC record found.[/bold red]")
-        else:
-            console.print(f"  DMARC policy: {dmarc['policy']}")
-            if dmarc["policy"] == "none":
-                console.print("  [bold yellow]! DMARC policy set to none[/bold yellow]")
-            if dmarc["rua"]:
-                console.print(f"  RUA: {dmarc['rua']}")
-            if dmarc["ruf"]:
-                console.print(f"  RUF: {dmarc['ruf']}")
-
-        spf = self.domain.check_spf()
-        results["spf"] = spf
-        if not spf["records"]:
-            console.print("  [bold red]! No SPF record found.[/bold red]")
-        else:
-            for rec in spf["records"]:
-                console.print(f"  SPF: {rec}")
-            if spf["soft"]:
-                console.print("  [bold yellow]! SPF ends with ~all[/bold yellow]")
-            if spf["neutral"]:
-                console.print("  [bold yellow]! SPF ends with ?all[/bold yellow]")
-
-        dkim_selectors = self.config.get("dkim_selectors", [])
-        dkim_results = {}
-        if dkim_selectors:
-            dkim_results = self.domain.check_dkim(dkim_selectors)
-            for sel, rec in dkim_results.items():
-                if rec:
-                    console.print(f"  DKIM selector '{sel}' found")
+            # Check for wildcard DNS records across all configured types
+            if self.config["dns_record_types"]:
+                console.print("[*] Checking for wildcard DNS records...")
+                wildcard = self.domain.check_wildcard_records(self.config["dns_record_types"])
+                results["wildcard"] = wildcard
+                if wildcard:
+                    console.print("    [bold red][!] Wildcard DNS records found.[/bold red]\n")
                 else:
+                    console.print("    [green][ ] No wildcard DNS records found.[/green]\n")
+            else:
+                results["wildcard"] = False
+
+            # Subdomain enumeration
+            subdomains = []
+            if self.config.get("subdomains"):
+                console.print("[*] Enumerating subdomains...")
+                found_subs = self.domain.enumerate_subdomains(
+                    self.config["subdomains"], 
+                    max_workers=self.config.get("max_workers", 10),
+                    recursive=self.config.get("recursive", True)
+                )
+                subdomains.extend(found_subs)
+                
+                # Try alternate DNS servers for additional coverage
+                if self.config.get("alternate_dns", False):
+                    console.print("[*] Checking subdomains via alternate DNS servers...")
+                    alt_subs = self.domain.enumerate_alternate_dns(self.config["subdomains"])
+                    subdomains.extend(alt_subs)
+                    
+            if self.config.get("ct_logs"):
+                console.print(
+                    "[*] Pulling subdomains from certificate transparency logs..."
+                )
+                ct_subs = self.domain.enumerate_ct_subdomains()
+                subdomains.extend(ct_subs)
+                
+            if self.config.get("dns_dumpster", False):
+                console.print("[*] Querying DNSDumpster for additional subdomains...")
+                dd_subs = self.domain.enumerate_dns_dumpster()
+                subdomains.extend(dd_subs)
+                
+            if self.config.get("zone_transfer"):
+                console.print("[*] Attempting zone transfer...")
+                axfr_subs = self.domain.attempt_zone_transfer()
+                subdomains.extend(axfr_subs)
+                if not axfr_subs:
+                    console.print("    Zone transfer failed or no records found.\n")
+
+            subdomain_count = len(set(subdomains))
+            results["subdomains"] = sorted(set(subdomains))
+            if subdomains:
+                table = Table(title="Discovered subdomains")
+                table.add_column("Subdomain", style="cyan")
+                for sub in sorted(set(subdomains)):
+                    table.add_row(sub)
+                console.print(table)
+            elif self.config.get("subdomains") or self.config.get("zone_transfer"):
+                console.print("    No subdomains found.\n")
+
+            # DNS record gathering
+            if self.config["dns_record_types"]:
+                console.print("[*] Gathering DNS records...\n")
+                meta_errors = []
+                record_counts = {}
+                dns_records = {}
+                record_table = Table(title="DNS Records")
+                record_table.add_column("Type", style="green")
+                record_table.add_column("Value", style="magenta")
+                for record_type in self.config["dns_record_types"]:
+                    records, meta_error = self.domain.get_dns_records(record_type)
+                    if meta_error:
+                        meta_errors.append(record_type)
+                        continue
+                    record_counts[record_type] = len(records)
+                    dns_records[record_type] = records
+                    for record in records:
+                        record_table.add_row(record_type, record)
+                if record_table.row_count:
+                    console.print(record_table)
+                if meta_errors:
                     console.print(
-                        f"  [bold red]! DKIM selector '{sel}' missing[/bold red]"
+                        f"[yellow]DNS metaqueries are not allowed for: {', '.join(meta_errors)}[/yellow]\n"
                     )
-        results["dkim"] = dkim_results
+
+                results["dns_records"] = dns_records
+                results["meta_errors"] = meta_errors
+                
+                # DNS Summary
+                if record_counts or subdomain_count:
+                    summary = Table(title="DNS Discovery Summary")
+                    summary.add_column("Record Type", style="green")
+                    summary.add_column("Count", style="magenta")
+                    for rtype, count in record_counts.items():
+                        summary.add_row(rtype, str(count))
+                    if self.config.get("subdomains") or self.config.get("zone_transfer"):
+                        summary.add_row("Subdomains found", str(subdomain_count))
+                    console.print(summary)
+            else:
+                results["dns_records"] = {}
+                results["meta_errors"] = []
+                results["subdomains"] = []
+        else:
+            # DNS section skipped
+            results["wildcard"] = False
+            results["subdomains"] = []
+            results["dns_records"] = {}
+            results["meta_errors"] = []
+
+        # Email Security Section
+        if self.config.get("run_email", True):
+            console.print("\n[bold green]===== EMAIL SECURITY =====[/bold green]")
+            
+            console.print("[*] Checking email authentication records...")
+            dmarc = self.domain.check_dmarc()
+            results["dmarc"] = dmarc
+            if not dmarc["present"]:
+                console.print("  [bold red]! No DMARC record found.[/bold red]")
+            else:
+                console.print(f"  DMARC policy: {dmarc['policy']}")
+                if dmarc["policy"] == "none":
+                    console.print("  [bold yellow]! DMARC policy set to none[/bold yellow]")
+                if dmarc["rua"]:
+                    console.print(f"  RUA: {dmarc['rua']}")
+                if dmarc["ruf"]:
+                    console.print(f"  RUF: {dmarc['ruf']}")
+
+            spf = self.domain.check_spf()
+            results["spf"] = spf
+            if not spf["records"]:
+                console.print("  [bold red]! No SPF record found.[/bold red]")
+            else:
+                for rec in spf["records"]:
+                    console.print(f"  SPF: {rec}")
+                if spf["soft"]:
+                    console.print("  [bold yellow]! SPF ends with ~all[/bold yellow]")
+                if spf["neutral"]:
+                    console.print("  [bold yellow]! SPF ends with ?all[/bold yellow]")
+
+            # DKIM Discovery and Validation
+            console.print("[*] Discovering DKIM selectors...")
+            
+            # First check configured selectors
+            dkim_selectors = self.config.get("dkim_selectors", [])
+            configured_results = {}
+            if dkim_selectors:
+                console.print("  [cyan]Checking configured DKIM selectors...[/cyan]")
+                configured_results = self.domain.check_dkim(dkim_selectors)
+            
+            # Discover additional selectors if enabled
+            discovered_results = {}
+            mx_results = {}
+            
+            if self.config.get("dkim_discovery", True):
+                console.print("  [cyan]Attempting DKIM selector discovery...[/cyan]")
+                discovered_results = self.domain.discover_dkim_selectors(
+                    use_common_selectors=True, 
+                    use_brute_force=self.config.get("dkim_brute_force", False)
+                )
+            
+                # Try MX-based discovery if enabled
+                if self.config.get("dkim_mx_analysis", True):
+                    mx_results = self.domain.enumerate_dkim_from_mx()
+            
+            # Combine all results
+            all_dkim_results = {}
+            all_dkim_results.update(configured_results)
+            all_dkim_results.update(discovered_results)
+            all_dkim_results.update(mx_results)
+            
+            # Display results
+            found_selectors = []
+            missing_selectors = []
+            
+            for sel, rec in all_dkim_results.items():
+                if rec:
+                    found_selectors.append(sel)
+                    console.print(f"  [green]✓ DKIM selector '{sel}' found[/green]")
+                else:
+                    missing_selectors.append(sel)
+            
+            # Show configured selectors that weren't found
+            for sel in dkim_selectors:
+                if sel not in all_dkim_results or not all_dkim_results[sel]:
+                    console.print(f"  [bold red]✗ Configured DKIM selector '{sel}' missing[/bold red]")
+            
+            if found_selectors:
+                console.print(f"  [bold green]Found {len(found_selectors)} DKIM selector(s): {', '.join(found_selectors)}[/bold green]")
+            else:
+                console.print("  [bold red]No DKIM selectors found[/bold red]")
+            
+            results["dkim"] = {
+                "configured": configured_results,
+                "discovered": discovered_results,
+                "mx_based": mx_results,
+                "all_found": {k: v for k, v in all_dkim_results.items() if v}
+            }
+        else:
+            # Email security section skipped
+            results["dmarc"] = {"present": False}
+            results["spf"] = {"records": []}
+            results["dkim"] = {"all_found": {}}
+
+        # Web Security Section  
+        if self.config.get("run_web", True):
+            console.print("\n[bold magenta]===== WEB SECURITY =====[/bold magenta]")
+            
+            # SSL/TLS Certificate validation
+            console.print("[*] Validating SSL certificate...")
+            ssl_validator = SSLValidator(self.domain.name)
+            ssl_results = ssl_validator.validate_certificate()
+            results["ssl"] = ssl_results
+            
+            # Website vulnerability scanning
+            if not self.config.get("quick_mode", False):
+                console.print("[*] Performing security scan...")
+                vuln_scanner = VulnerabilityScanner(self.domain.name)
+                vuln_results = vuln_scanner.scan()
+                results["vulnerabilities"] = vuln_results
+            else:
+                results["vulnerabilities"] = {}
+        else:
+            # Web security section skipped
+            results["ssl"] = {}
+            results["vulnerabilities"] = {}
+        
         console.print()
         return results
 
@@ -1025,28 +1261,121 @@ def main():
     parser.add_argument(
         "--output-json", help="Write results to the given JSON file", default=None
     )
+    
+    # Component selection flags
+    component_group = parser.add_argument_group("Component Selection", 
+                                               "Choose which components to test (default: all)")
+    component_group.add_argument(
+        "--dns-only", action="store_true", 
+        help="Only perform DNS record discovery and subdomain enumeration"
+    )
+    component_group.add_argument(
+        "--email-only", action="store_true", 
+        help="Only perform email security checks (SPF, DMARC, DKIM)"
+    )
+    component_group.add_argument(
+        "--web-only", action="store_true", 
+        help="Only perform website security checks (SSL, HTTP headers, vulnerabilities)"
+    )
+    component_group.add_argument(
+        "--no-subdomains", action="store_true", 
+        help="Skip subdomain enumeration (faster execution)"
+    )
+    
+    # Quick test flags
+    quick_group = parser.add_argument_group("Quick Tests", 
+                                          "Fast testing options")
+    quick_group.add_argument(
+        "--quick", action="store_true", 
+        help="Quick scan - basic checks only, no subdomain enumeration"
+    )
+    quick_group.add_argument(
+        "--dkim-discovery", action="store_true", 
+        help="Focus on comprehensive DKIM selector discovery"
+    )
     args = parser.parse_args()
-
+    
+    # Validate component selection flags (only one can be selected)
+    component_flags = [args.dns_only, args.email_only, args.web_only]
+    if sum(component_flags) > 1:
+        parser.error("Only one of --dns-only, --email-only, or --web-only can be specified")
+    
+    # Determine which components to run
+    run_dns = True
+    run_email = True 
+    run_web = True
+    
+    if args.dns_only:
+        run_email = False
+        run_web = False
+    elif args.email_only:
+        run_dns = False
+        run_web = False
+    elif args.web_only:
+        run_dns = False
+        run_email = False
+    elif args.quick:
+        # Quick mode: basic DNS, email security, SSL check only
+        pass  # All components run but with limited scope
+    
     # Initialize configuration manager
     config_manager = ConfigManager(args.config)
 
-    # Retrieve configuration settings
+    # Retrieve configuration settings based on selected components
     dns_record_types = config_manager.get_setting(
         "DNSRecords", "types", fallback=ALL_RECORD_TYPES
-    )
-    subdomains = config_manager.get_subdomains(fallback=[])
+    ) if run_dns else []
+    
+    # Handle subdomain configuration
+    subdomains = []
+    if run_dns and not args.no_subdomains and not args.quick:
+        subdomains = config_manager.get_subdomains(fallback=[])
+    
     query_delay = config_manager.get_setting(
         "Settings", "query_delay", fallback=QUERY_DELAY
     )
-    dkim_selectors = config_manager.get_setting("DKIM", "selectors", fallback=[])
-    zone_transfer = config_manager.get_setting(
-        "ZoneTransfer", "enabled", fallback=False
-    )
-    ct_logs = config_manager.get_setting("Subdomains", "ct_logs", fallback=False)
-    dns_dumpster = config_manager.get_setting("Subdomains", "dns_dumpster", fallback=False)
-    alternate_dns = config_manager.get_setting("Subdomains", "alternate_dns", fallback=False)
-    max_workers = config_manager.get_setting("Subdomains", "max_workers", fallback=10)
-    recursive = config_manager.get_setting("Subdomains", "recursive", fallback=True)
+    
+    # Email security settings
+    if run_email:
+        dkim_selectors = config_manager.get_setting("DKIM", "selectors", fallback=[])
+        dkim_discovery = config_manager.get_setting("DKIM", "discovery_enabled", fallback=True)
+        dkim_brute_force = config_manager.get_setting("DKIM", "brute_force", fallback=False)
+        dkim_mx_analysis = config_manager.get_setting("DKIM", "mx_analysis", fallback=True)
+        
+        # Enable comprehensive DKIM discovery if requested
+        if args.dkim_discovery:
+            dkim_discovery = True
+            dkim_brute_force = True
+            dkim_mx_analysis = True
+    else:
+        dkim_selectors = []
+        dkim_discovery = False
+        dkim_brute_force = False
+        dkim_mx_analysis = False
+    
+    # DNS-specific settings
+    if run_dns:
+        zone_transfer = config_manager.get_setting("ZoneTransfer", "enabled", fallback=False)
+        ct_logs = config_manager.get_setting("Subdomains", "ct_logs", fallback=False)
+        dns_dumpster = config_manager.get_setting("Subdomains", "dns_dumpster", fallback=False)
+        alternate_dns = config_manager.get_setting("Subdomains", "alternate_dns", fallback=False)
+        max_workers = config_manager.get_setting("Subdomains", "max_workers", fallback=10)
+        recursive = config_manager.get_setting("Subdomains", "recursive", fallback=True)
+        
+        # Quick mode adjustments
+        if args.quick:
+            ct_logs = False
+            dns_dumpster = False
+            alternate_dns = False
+            recursive = False
+            max_workers = 5
+    else:
+        zone_transfer = False
+        ct_logs = False
+        dns_dumpster = False
+        alternate_dns = False
+        max_workers = 10
+        recursive = True
 
     # Initialize Inspector with domain and configuration
     inspector = Inspector(
@@ -1056,12 +1385,20 @@ def main():
             "subdomains": subdomains,
             "query_delay": query_delay,
             "dkim_selectors": dkim_selectors,
+            "dkim_discovery": dkim_discovery,
+            "dkim_brute_force": dkim_brute_force,
+            "dkim_mx_analysis": dkim_mx_analysis,
             "zone_transfer": zone_transfer,
             "ct_logs": ct_logs,
             "dns_dumpster": dns_dumpster,
             "alternate_dns": alternate_dns,
             "max_workers": max_workers,
             "recursive": recursive,
+            # Component selection flags
+            "run_dns": run_dns,
+            "run_email": run_email,
+            "run_web": run_web,
+            "quick_mode": args.quick,
         },
     )
 

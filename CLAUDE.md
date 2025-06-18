@@ -12,8 +12,33 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the tool
+# Run the tool (all components)
 python3 dns_inspectah.py example.com
+
+# Component-specific testing
+python3 dns_inspectah.py --dns-only example.com      # DNS discovery only
+python3 dns_inspectah.py --email-only example.com    # Email security only  
+python3 dns_inspectah.py --web-only example.com      # Web security only
+python3 dns_inspectah.py --quick example.com         # Quick scan (basic checks)
+python3 dns_inspectah.py --dkim-discovery example.com # Comprehensive DKIM discovery
+python3 dns_inspectah.py --no-subdomains example.com  # Skip subdomain enumeration
+```
+
+## Command Line Options
+
+### Component Selection
+- `--dns-only`: Only perform DNS record discovery and subdomain enumeration
+- `--email-only`: Only perform email security checks (SPF, DMARC, DKIM)
+- `--web-only`: Only perform website security checks (SSL, HTTP headers, vulnerabilities)
+- `--no-subdomains`: Skip subdomain enumeration for faster execution
+
+### Quick Testing
+- `--quick`: Quick scan with basic checks only, no subdomain enumeration
+- `--dkim-discovery`: Focus on comprehensive DKIM selector discovery (enables brute force)
+
+### General Options
+- `--config CONFIG`: Path to configuration file (default: config.ini)
+- `--output-json FILE`: Write results to JSON file
 ```
 
 ## Code Architecture

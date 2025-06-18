@@ -37,3 +37,7 @@ htmlcov/
 .cache
 .pytest_cache
 
+# Test scripts (temporary files for development)
+test_*.py
+*_test.py
+
