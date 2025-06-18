@@ -662,38 +662,283 @@ class SSLValidator:
             return {"valid": False, "error": str(e)}
 
 
-class VulnerabilityScanner:
+class SecurityHeaderScanner:
     """
-    Scans for common web vulnerabilities in the domain's web services.
+    Analyzes HTTP security headers for web security best practices.
     """
 
     def __init__(self, domain):
-        """Store the domain to scan for vulnerabilities."""
+        """Initialize the security header scanner with the target domain."""
         self.domain = domain
+        
+        # Realistic browser headers to avoid detection
+        self.request_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
+        }
+        
+        self.security_headers = {
+            'strict-transport-security': {
+                'name': 'HSTS',
+                'description': 'HTTP Strict Transport Security',
+                'critical': True
+            },
+            'content-security-policy': {
+                'name': 'CSP',
+                'description': 'Content Security Policy',
+                'critical': True
+            },
+            'x-frame-options': {
+                'name': 'X-Frame-Options',
+                'description': 'Clickjacking protection',
+                'critical': True
+            },
+            'x-content-type-options': {
+                'name': 'X-Content-Type-Options',
+                'description': 'MIME type sniffing protection',
+                'critical': False
+            },
+            'x-xss-protection': {
+                'name': 'X-XSS-Protection',
+                'description': 'XSS filter protection',
+                'critical': False
+            },
+            'referrer-policy': {
+                'name': 'Referrer-Policy',
+                'description': 'Referrer information control',
+                'critical': False
+            },
+            'permissions-policy': {
+                'name': 'Permissions-Policy',
+                'description': 'Feature policy control',
+                'critical': False
+            }
+        }
 
-    def scan_for_vulnerabilities(self):
+    def scan_security_headers(self):
         """
-        Scans the domain for common web vulnerabilities.
+        Analyzes HTTP security headers for both HTTP and HTTPS endpoints.
+        Returns detailed analysis of security header implementation.
         """
-        # Example: Basic check for a sample vulnerability (to be expanded)
-        try:
-            response = requests.get(f"http://{self.domain}", timeout=REQUEST_TIMEOUT)
-            if "vulnerable keyword" in response.text:
-                console.print(
-                    f"[bold red][!] Potential vulnerability found in {self.domain}[/bold red]\n"
-                )
-                return {"vulnerable": True}
-            else:
-                console.print(
-                    f"[green][+] No obvious vulnerabilities found in {self.domain}[/green]\n"
-                )
-                return {"vulnerable": False}
-        except Exception as e:
-            console.print(
-                f"[-] Error scanning {self.domain} for vulnerabilities: {e}\n",
-                style="red",
-            )
-            return {"error": str(e)}
+        results = {
+            'headers_found': {},
+            'missing_critical': [],
+            'missing_recommended': [],
+            'recommendations': [],
+            'score': 0,
+            'grade': 'F'
+        }
+
+        # Test both HTTP and HTTPS
+        protocols = ['https', 'http']
+        
+        for protocol in protocols:
+            url = f"{protocol}://{self.domain}"
+            
+            try:
+                # Add randomized delay between protocols to avoid rate limiting
+                if protocol == 'http':
+                    import time
+                    import random
+                    time.sleep(random.uniform(1.5, 3.0))
+                
+                # Create session for better connection handling
+                session = requests.Session()
+                session.headers.update(self.request_headers)
+                
+                # Use HEAD request first for stealth, fallback to GET if needed
+                try:
+                    response = session.head(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+                    # If HEAD doesn't return security headers, try GET
+                    if not any(header in response.headers for header in ['strict-transport-security', 'content-security-policy', 'x-frame-options']):
+                        response = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+                except:
+                    response = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+                headers = {k.lower(): v for k, v in response.headers.items()}
+                
+                console.print(f"[bold cyan]Security Headers Analysis for {url}[/bold cyan]")
+                
+                # Create table for header analysis
+                table = Table(show_header=True, header_style="bold magenta")
+                table.add_column("Header", style="cyan", no_wrap=True)
+                table.add_column("Status", justify="center")
+                table.add_column("Value", style="dim", max_width=50)
+                table.add_column("Assessment", style="yellow")
+                
+                found_headers = 0
+                total_critical = sum(1 for h in self.security_headers.values() if h['critical'])
+                
+                for header_key, header_info in self.security_headers.items():
+                    if header_key in headers:
+                        found_headers += 1
+                        header_value = headers[header_key]
+                        results['headers_found'][header_key] = header_value
+                        
+                        # Analyze header quality
+                        assessment = self._analyze_header_value(header_key, header_value)
+                        status_color = "green" if assessment['secure'] else "yellow"
+                        
+                        table.add_row(
+                            header_info['name'],
+                            f"[{status_color}]✓ Present[/{status_color}]",
+                            header_value[:47] + "..." if len(header_value) > 50 else header_value,
+                            assessment['message']
+                        )
+                        
+                        if assessment['secure'] and header_info['critical']:
+                            results['score'] += 20
+                        elif assessment['secure']:
+                            results['score'] += 10
+                        else:
+                            results['recommendations'].append(f"Improve {header_info['name']}: {assessment['message']}")
+                            
+                    else:
+                        status = "critical" if header_info['critical'] else "recommended"
+                        if header_info['critical']:
+                            results['missing_critical'].append(header_info['name'])
+                        else:
+                            results['missing_recommended'].append(header_info['name'])
+                            
+                        table.add_row(
+                            header_info['name'],
+                            "[red]✗ Missing[/red]",
+                            "Not set",
+                            f"Missing {status} security header"
+                        )
+                        
+                        results['recommendations'].append(
+                            f"Implement {header_info['name']}: {header_info['description']}"
+                        )
+                
+                console.print(table)
+                
+                # Calculate security grade
+                results['grade'] = self._calculate_security_grade(results['score'])
+                
+                # Display summary
+                console.print(f"\n[bold]Security Headers Summary[/bold]")
+                console.print(f"Headers found: {found_headers}/{len(self.security_headers)}")
+                console.print(f"Security score: {results['score']}/100")
+                console.print(f"Security grade: [bold]{results['grade']}[/bold]")
+                
+                if results['missing_critical']:
+                    console.print(f"[red]Missing critical headers: {', '.join(results['missing_critical'])}[/red]")
+                
+                if results['recommendations']:
+                    console.print(f"\n[yellow]Recommendations:[/yellow]")
+                    for rec in results['recommendations'][:3]:  # Show top 3 recommendations
+                        console.print(f"  • {rec}")
+                
+                console.print()
+                session.close()  # Clean up session
+                break  # Use first successful response
+                
+            except requests.exceptions.SSLError:
+                session.close()  # Clean up session
+                if protocol == 'https':
+                    console.print(f"[yellow]HTTPS not available for {self.domain}, trying HTTP...[/yellow]")
+                    continue
+                else:
+                    console.print(f"[red]Connection failed for {url}[/red]")
+            except Exception as e:
+                session.close()  # Clean up session
+                if protocol == 'https':
+                    continue  # Try HTTP if HTTPS fails
+                console.print(f"[red]Error analyzing security headers for {self.domain}: {e}[/red]")
+                results['error'] = str(e)
+                break
+        
+        return results
+
+    def _analyze_header_value(self, header, value):
+        """Analyze the quality and security of a specific header value."""
+        analyses = {
+            'strict-transport-security': self._analyze_hsts,
+            'content-security-policy': self._analyze_csp,
+            'x-frame-options': self._analyze_frame_options,
+            'x-content-type-options': self._analyze_content_type_options,
+            'x-xss-protection': self._analyze_xss_protection,
+            'referrer-policy': self._analyze_referrer_policy,
+        }
+        
+        analyzer = analyses.get(header, lambda v: {'secure': True, 'message': 'Present'})
+        return analyzer(value)
+
+    def _analyze_hsts(self, value):
+        """Analyze HSTS header configuration."""
+        value_lower = value.lower()
+        if 'includesubdomains' in value_lower and 'preload' in value_lower:
+            return {'secure': True, 'message': 'Excellent - includes subdomains and preload'}
+        elif 'includesubdomains' in value_lower:
+            return {'secure': True, 'message': 'Good - includes subdomains'}
+        else:
+            return {'secure': False, 'message': 'Basic - consider includeSubDomains'}
+
+    def _analyze_csp(self, value):
+        """Analyze Content Security Policy header."""
+        if "'unsafe-inline'" in value or "'unsafe-eval'" in value:
+            return {'secure': False, 'message': 'Contains unsafe directives'}
+        elif 'default-src' in value:
+            return {'secure': True, 'message': 'Good policy structure'}
+        else:
+            return {'secure': False, 'message': 'Missing default-src directive'}
+
+    def _analyze_frame_options(self, value):
+        """Analyze X-Frame-Options header."""
+        value_upper = value.upper()
+        if value_upper in ['DENY', 'SAMEORIGIN']:
+            return {'secure': True, 'message': f'Secure setting: {value_upper}'}
+        else:
+            return {'secure': False, 'message': 'Use DENY or SAMEORIGIN'}
+
+    def _analyze_content_type_options(self, value):
+        """Analyze X-Content-Type-Options header."""
+        if value.lower() == 'nosniff':
+            return {'secure': True, 'message': 'Correctly configured'}
+        else:
+            return {'secure': False, 'message': 'Should be "nosniff"'}
+
+    def _analyze_xss_protection(self, value):
+        """Analyze X-XSS-Protection header."""
+        if value == '1; mode=block':
+            return {'secure': True, 'message': 'Optimal configuration'}
+        elif value == '1':
+            return {'secure': True, 'message': 'Basic protection enabled'}
+        else:
+            return {'secure': False, 'message': 'Use "1; mode=block"'}
+
+    def _analyze_referrer_policy(self, value):
+        """Analyze Referrer-Policy header."""
+        secure_policies = ['no-referrer', 'same-origin', 'strict-origin', 'strict-origin-when-cross-origin']
+        if value.lower() in secure_policies:
+            return {'secure': True, 'message': f'Secure policy: {value}'}
+        else:
+            return {'secure': False, 'message': 'Consider stricter policy'}
+
+    def _calculate_security_grade(self, score):
+        """Calculate security grade based on score."""
+        if score >= 90:
+            return 'A+'
+        elif score >= 80:
+            return 'A'
+        elif score >= 70:
+            return 'B'
+        elif score >= 60:
+            return 'C'
+        elif score >= 50:
+            return 'D'
+        else:
+            return 'F'
 
 
 class ConfigManager:
@@ -823,12 +1068,12 @@ def main():
     # Perform the inspection
     results = inspector.inspect()
 
-    # Initialize and use SSLValidator and VulnerabilityScanner if needed
+    # Initialize and use SSLValidator and SecurityHeaderScanner if needed
     ssl_validator = SSLValidator(args.domain)
     results["ssl"] = ssl_validator.validate_certificate()
 
-    vulnerability_scanner = VulnerabilityScanner(args.domain)
-    results["vulnerabilities"] = vulnerability_scanner.scan_for_vulnerabilities()
+    security_scanner = SecurityHeaderScanner(args.domain)
+    results["security_headers"] = security_scanner.scan_security_headers()
 
     if args.output_json:
         with open(args.output_json, "w", encoding="utf-8") as fh:

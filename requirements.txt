@@ -1,4 +1,12 @@
-dnspython
-requests
-pyfiglet
-rich
+# DNS Inspector Dependencies
+# Core DNS operations
+dnspython>=2.3.0
+
+# HTTP requests for vulnerability scanning
+requests>=2.28.0
+
+# ASCII banner generation
+pyfiglet>=0.8.0
+
+# Enhanced console output with tables and formatting
+rich>=13.0.0
