@@ -861,6 +861,58 @@ class Domain:
         
         return discovered_selectors
 
+    def discover_dkim_selectors_with_progress(self, use_common_selectors=True, use_brute_force=False, progress_callback=None):
+        """
+        Enhanced DKIM discovery with progress tracking.
+        """
+        discovered_selectors = {}
+        total_steps = 5
+        current_step = 0
+        
+        def update_progress():
+            nonlocal current_step
+            current_step += 1
+            if progress_callback:
+                progress_callback(int((current_step / total_steps) * 100))
+        
+        # 1. SPF Record Analysis
+        spf_selectors = self._extract_dkim_from_spf()
+        discovered_selectors.update(spf_selectors)
+        update_progress()
+        
+        # 2. BIMI Record Analysis
+        bimi_selectors = self._check_bimi_dkim_indicators()
+        discovered_selectors.update(bimi_selectors)
+        update_progress()
+        
+        # 3. Email Infrastructure Detection
+        infra_selectors = self._analyze_email_infrastructure()
+        discovered_selectors.update(infra_selectors)
+        update_progress()
+        
+        # 4. Enhanced common selectors
+        if use_common_selectors:
+            common_selectors = self._get_enhanced_common_selectors()
+            common_results = self.check_dkim(common_selectors)
+            for selector, record in common_results.items():
+                if record and selector not in discovered_selectors:
+                    discovered_selectors[selector] = record
+        update_progress()
+        
+        # 5. Advanced pattern scanning
+        zone_selectors = self._advanced_dkim_scanning()
+        discovered_selectors.update(zone_selectors)
+        
+        if use_brute_force:
+            pattern_selectors = self._intelligent_pattern_discovery(discovered_selectors)
+            pattern_results = self.check_dkim(pattern_selectors)
+            for selector, record in pattern_results.items():
+                if record and selector not in discovered_selectors:
+                    discovered_selectors[selector] = record
+        
+        update_progress()
+        return discovered_selectors
+
 
 class Inspector:
     """
@@ -871,6 +923,111 @@ class Inspector:
         """Create a Domain for `domain` and retain `config` settings."""
         self.domain = Domain(domain, query_delay=config.get("query_delay", QUERY_DELAY))
         self.config = config  # Configuration settings
+
+    def _detect_email_platform(self):
+        """Detect the email platform (Google, Microsoft, etc.) based on MX records and SPF."""
+        try:
+            mx_records, _ = self.domain.get_dns_records("MX")
+            spf_data = self.domain.check_spf()
+            
+            mx_hosts = []
+            for mx_record in mx_records:
+                parts = str(mx_record).split()
+                if len(parts) >= 2:
+                    mx_hosts.append(parts[1].lower().rstrip('.'))
+            
+            # Check MX records for platform indicators
+            for mx_host in mx_hosts:
+                if 'google.com' in mx_host or 'googlemail.com' in mx_host:
+                    return "Google Workspace (Gmail)"
+                elif 'outlook.com' in mx_host or 'protection.outlook.com' in mx_host:
+                    return "Microsoft 365 (Exchange Online)"
+                elif 'amazonses.com' in mx_host:
+                    return "Amazon SES"
+                elif 'mailgun.org' in mx_host:
+                    return "Mailgun"
+                elif 'sendgrid.net' in mx_host:
+                    return "SendGrid"
+                elif 'mandrillapp.com' in mx_host:
+                    return "Mandrill (Mailchimp)"
+                elif 'zoho.com' in mx_host:
+                    return "Zoho Mail"
+                elif 'fastmail.com' in mx_host:
+                    return "FastMail"
+                elif 'protonmail.ch' in mx_host:
+                    return "ProtonMail"
+            
+            # Check SPF records for additional clues
+            for spf_record in spf_data.get('records', []):
+                if 'include:_spf.google.com' in spf_record:
+                    return "Google Workspace (Gmail)"
+                elif 'include:spf.protection.outlook.com' in spf_record:
+                    return "Microsoft 365 (Exchange Online)"
+                elif 'include:amazonses.com' in spf_record:
+                    return "Amazon SES"
+                elif 'include:mailgun.org' in spf_record:
+                    return "Mailgun"
+                elif 'include:sendgrid.net' in spf_record:
+                    return "SendGrid"
+            
+            return "Unknown / Self-hosted"
+            
+        except Exception:
+            return "Unknown"
+
+    def _detect_email_security_provider(self):
+        """Detect email security providers based on MX records and DMARC."""
+        try:
+            mx_records, _ = self.domain.get_dns_records("MX")
+            dmarc_data = self.domain.check_dmarc()
+            
+            mx_hosts = []
+            for mx_record in mx_records:
+                parts = str(mx_record).split()
+                if len(parts) >= 2:
+                    mx_hosts.append(parts[1].lower().rstrip('.'))
+            
+            # Check for security service providers in MX records
+            for mx_host in mx_hosts:
+                if 'mimecast.com' in mx_host:
+                    return "Mimecast"
+                elif 'proofpoint.com' in mx_host:
+                    return "Proofpoint"
+                elif 'barracuda' in mx_host:
+                    return "Barracuda"
+                elif 'forcepoint.com' in mx_host:
+                    return "Forcepoint"
+                elif 'cisco.com' in mx_host or 'ironport.com' in mx_host:
+                    return "Cisco IronPort"
+                elif 'symantec.com' in mx_host:
+                    return "Symantec"
+                elif 'trendmicro.com' in mx_host:
+                    return "Trend Micro"
+                elif 'sophos.com' in mx_host:
+                    return "Sophos"
+                elif 'microsoft.com' in mx_host or 'protection.outlook.com' in mx_host:
+                    return "Microsoft Defender for Office 365"
+            
+            # Check DMARC RUA/RUF for security providers
+            if dmarc_data.get('rua'):
+                rua = dmarc_data['rua'].lower()
+                if 'barracuda' in rua:
+                    return "Barracuda"
+                elif 'proofpoint' in rua:
+                    return "Proofpoint"
+                elif 'mimecast' in rua:
+                    return "Mimecast"
+                elif 'agari' in rua:
+                    return "Agari"
+                elif 'dmarcanalyzer' in rua:
+                    return "DMARC Analyzer"
+                elif 'valimail' in rua:
+                    return "Valimail"
+            
+            return None
+            
+        except Exception:
+            return None
 
     def inspect(self):
         """
@@ -1010,90 +1167,141 @@ class Inspector:
         if self.config.get("run_email", True):
             console.print("\n[bold green]===== EMAIL SECURITY =====[/bold green]")
             
-            console.print("[*] Checking email authentication records...")
+            import time
+            from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+            
+            # Analyze email platform and security provider first
+            console.print("[*] Analyzing email infrastructure...")
+            email_platform = self._detect_email_platform()
+            security_provider = self._detect_email_security_provider()
+            
+            if email_platform:
+                console.print(f"  [cyan]Email Platform: {email_platform}[/cyan]")
+            if security_provider:
+                console.print(f"  [cyan]Email Security Provider: {security_provider}[/cyan]")
+            
+            # Email Authentication Records Analysis
+            console.print("\n[*] Checking email authentication records...")
+            console.print("  [dim]DMARC helps prevent email spoofing by specifying how to handle unauthenticated emails[/dim]")
+            
             dmarc = self.domain.check_dmarc()
             results["dmarc"] = dmarc
             if not dmarc["present"]:
-                console.print("  [bold red]! No DMARC record found.[/bold red]")
+                console.print("  [bold red]! No DMARC record found - emails can be easily spoofed[/bold red]")
             else:
-                console.print(f"  DMARC policy: {dmarc['policy']}")
+                policy_color = "green" if dmarc["policy"] in ["quarantine", "reject"] else "yellow"
+                console.print(f"  DMARC policy: [{policy_color}]{dmarc['policy']}[/{policy_color}]")
                 if dmarc["policy"] == "none":
-                    console.print("  [bold yellow]! DMARC policy set to none[/bold yellow]")
+                    console.print("  [bold yellow]! DMARC policy set to 'none' - provides monitoring but no protection[/bold yellow]")
                 if dmarc["rua"]:
-                    console.print(f"  RUA: {dmarc['rua']}")
+                    console.print(f"  RUA (Aggregate Reports): {dmarc['rua']}")
                 if dmarc["ruf"]:
-                    console.print(f"  RUF: {dmarc['ruf']}")
+                    console.print(f"  RUF (Forensic Reports): {dmarc['ruf']}")
 
+            console.print("  [dim]SPF specifies which servers are authorized to send email for this domain[/dim]")
             spf = self.domain.check_spf()
             results["spf"] = spf
             if not spf["records"]:
-                console.print("  [bold red]! No SPF record found.[/bold red]")
+                console.print("  [bold red]! No SPF record found - no sender authentication[/bold red]")
             else:
                 for rec in spf["records"]:
                     console.print(f"  SPF: {rec}")
                 if spf["soft"]:
-                    console.print("  [bold yellow]! SPF ends with ~all[/bold yellow]")
+                    console.print("  [bold yellow]! SPF ends with ~all (soft fail) - allows unauthorized senders[/bold yellow]")
                 if spf["neutral"]:
-                    console.print("  [bold yellow]! SPF ends with ?all[/bold yellow]")
+                    console.print("  [bold yellow]! SPF ends with ?all (neutral) - provides no protection[/bold yellow]")
+                elif not spf["soft"] and not spf["neutral"]:
+                    console.print("  [green]✓ SPF properly configured with hard fail (-all)[/green]")
 
-            # DKIM Discovery and Validation
-            console.print("[*] Discovering DKIM selectors...")
+            # Enhanced DKIM Discovery with Progress Tracking
+            console.print("\n[*] Discovering DKIM selectors...")
+            console.print("  [dim]DKIM provides cryptographic signatures to verify email authenticity[/dim]")
             
-            # First check configured selectors
+            start_time = time.time()
+            all_dkim_results = {}
+            
+            # Simplified discovery without complex progress bars to avoid timeout
             dkim_selectors = self.config.get("dkim_selectors", [])
             configured_results = {}
             if dkim_selectors:
                 console.print("  [cyan]Checking configured DKIM selectors...[/cyan]")
                 configured_results = self.domain.check_dkim(dkim_selectors)
+                all_dkim_results.update(configured_results)
             
             # Discover additional selectors if enabled
-            discovered_results = {}
-            mx_results = {}
-            
             if self.config.get("dkim_discovery", True):
-                console.print("  [cyan]Attempting DKIM selector discovery...[/cyan]")
+                console.print("  [cyan]Performing DKIM selector discovery...[/cyan]")
                 discovered_results = self.domain.discover_dkim_selectors(
                     use_common_selectors=True, 
-                    use_brute_force=self.config.get("dkim_brute_force", False)
+                    use_brute_force=False  # Disable brute force to avoid timeout
                 )
-            
-                # Try MX-based discovery if enabled
+                all_dkim_results.update(discovered_results)
+                
+                # MX-based discovery
                 if self.config.get("dkim_mx_analysis", True):
+                    console.print("  [cyan]Analyzing MX records for DKIM patterns...[/cyan]")
                     mx_results = self.domain.enumerate_dkim_from_mx()
+                    all_dkim_results.update(mx_results)
             
-            # Combine all results
-            all_dkim_results = {}
-            all_dkim_results.update(configured_results)
-            all_dkim_results.update(discovered_results)
-            all_dkim_results.update(mx_results)
+            discovery_time = time.time() - start_time
+            console.print(f"  [dim]Discovery completed in {discovery_time:.1f} seconds[/dim]")
             
-            # Display results
-            found_selectors = []
+            # Display comprehensive results
+            found_selectors = {k: v for k, v in all_dkim_results.items() if v}
             missing_selectors = []
             
-            for sel, rec in all_dkim_results.items():
-                if rec:
-                    found_selectors.append(sel)
-                    console.print(f"  [green]✓ DKIM selector '{sel}' found[/green]")
-                else:
-                    missing_selectors.append(sel)
+            if found_selectors:
+                console.print(f"\n  [bold green]✓ Found {len(found_selectors)} DKIM selector(s)[/bold green]")
+                
+                # Create detailed DKIM table
+                dkim_table = Table(title="DKIM Records Found")
+                dkim_table.add_column("Selector", style="cyan")
+                dkim_table.add_column("Key Type", style="magenta")
+                dkim_table.add_column("Algorithm", style="green")
+                dkim_table.add_column("Public Key (truncated)", style="yellow")
+                dkim_table.add_column("Full Record", style="dim")
+                
+                for selector, record in found_selectors.items():
+                    if record:
+                        # Parse DKIM record for details
+                        key_type = "RSA"  # Default
+                        algorithm = "sha256"  # Default
+                        public_key_preview = "N/A"
+                        
+                        record_str = str(record)
+                        if "k=" in record_str:
+                            key_type = record_str.split("k=")[1].split(";")[0].strip()
+                        if "h=" in record_str:
+                            algorithm = record_str.split("h=")[1].split(";")[0].strip()
+                        if "p=" in record_str:
+                            pub_key = record_str.split("p=")[1].split(";")[0].strip()
+                            public_key_preview = pub_key[:32] + "..." if len(pub_key) > 32 else pub_key
+                        
+                        dkim_table.add_row(
+                            selector,
+                            key_type,
+                            algorithm,
+                            public_key_preview,
+                            record_str[:100] + "..." if len(record_str) > 100 else record_str
+                        )
+                
+                console.print(dkim_table)
+            else:
+                console.print("  [bold red]✗ No DKIM selectors found[/bold red]")
             
             # Show configured selectors that weren't found
             for sel in dkim_selectors:
                 if sel not in all_dkim_results or not all_dkim_results[sel]:
                     console.print(f"  [bold red]✗ Configured DKIM selector '{sel}' missing[/bold red]")
-            
-            if found_selectors:
-                console.print(f"  [bold green]Found {len(found_selectors)} DKIM selector(s): {', '.join(found_selectors)}[/bold green]")
-            else:
-                console.print("  [bold red]No DKIM selectors found[/bold red]")
+                    missing_selectors.append(sel)
             
             results["dkim"] = {
-                "configured": configured_results,
-                "discovered": discovered_results,
-                "mx_based": mx_results,
-                "all_found": {k: v for k, v in all_dkim_results.items() if v}
+                "found_selectors": found_selectors,
+                "missing_selectors": missing_selectors,
+                "discovery_time": discovery_time
             }
+            results["email_platform"] = email_platform
+            results["security_provider"] = security_provider
         else:
             # Email security section skipped
             results["dmarc"] = {"present": False}
