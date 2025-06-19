@@ -20,6 +20,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, TaskID
+import ipaddress
 
 console = Console()
 
@@ -32,6 +33,340 @@ QUERY_DELAY = 0.5
 REQUEST_TIMEOUT = 5  # seconds
 
 
+class DomainIntelligence:
+    """
+    Domain Intelligence Framework for DNS-based discovery enhancement.
+    Analyzes DNS patterns to categorize domains and enhance discovery across all components.
+    """
+    
+    def __init__(self, domain_name):
+        self.domain_name = domain_name
+        self.intelligence = {
+            'category': 'unknown',
+            'hosting_provider': None,
+            'email_provider': None,
+            'security_stack': [],
+            'cdn_provider': None,
+            'organization_type': None,
+            'geographic_hints': [],
+            'technology_stack': [],
+            'subdomain_patterns': [],
+            'infrastructure_complexity': 'simple'
+        }
+        
+    def analyze_domain_patterns(self, dns_records):
+        """Comprehensive analysis of DNS patterns for domain intelligence."""
+        try:
+            # Analyze hosting infrastructure
+            if 'A' in dns_records:
+                self._analyze_hosting_infrastructure(dns_records['A'])
+            
+            # Analyze email infrastructure  
+            if 'MX' in dns_records:
+                self._analyze_email_infrastructure(dns_records['MX'])
+                
+            # Analyze nameserver patterns
+            if 'NS' in dns_records:
+                self._analyze_nameserver_patterns(dns_records['NS'])
+                
+            # Analyze TXT records for technology stack
+            if 'TXT' in dns_records:
+                self._analyze_technology_stack(dns_records['TXT'])
+                
+            # Analyze CNAME patterns for services
+            if 'CNAME' in dns_records:
+                self._analyze_service_patterns(dns_records['CNAME'])
+                
+            # Determine organization type
+            self._determine_organization_type()
+            
+            # Assess infrastructure complexity
+            self._assess_infrastructure_complexity(dns_records)
+            
+        except Exception as e:
+            console.print(f"[dim]Domain intelligence analysis failed: {e}[/dim]")
+            
+        return self.intelligence
+    
+    def _analyze_hosting_infrastructure(self, a_records):
+        """Analyze A records for hosting provider and infrastructure patterns."""
+        providers = set()
+        geographic_hints = set()
+        
+        for ip in a_records:
+            try:
+                ip_obj = ipaddress.ip_address(ip)
+                provider, geo_hint = self._identify_ip_provider(str(ip_obj))
+                if provider:
+                    providers.add(provider)
+                if geo_hint:
+                    geographic_hints.add(geo_hint)
+            except ValueError:
+                continue
+                
+        if providers:
+            self.intelligence['hosting_provider'] = list(providers)
+        if geographic_hints:
+            self.intelligence['geographic_hints'] = list(geographic_hints)
+            
+        # Detect load balancing patterns
+        if len(a_records) > 2:
+            self.intelligence['technology_stack'].append('load_balancing')
+    
+    def _identify_ip_provider(self, ip):
+        """Identify hosting provider and geographic hints from IP address."""
+        # AWS IP ranges (simplified)
+        aws_ranges = [
+            ('13.', 'AWS', 'us-east'),
+            ('52.', 'AWS', 'global'),
+            ('54.', 'AWS', 'global'),
+            ('3.', 'AWS', 'global'),
+            ('18.', 'AWS', 'global')
+        ]
+        
+        # Google Cloud ranges
+        gcp_ranges = [
+            ('34.', 'Google Cloud', 'global'),
+            ('35.', 'Google Cloud', 'global'),
+            ('104.154.', 'Google Cloud', 'us-central'),
+            ('130.211.', 'Google Cloud', 'global')
+        ]
+        
+        # Cloudflare ranges
+        cf_ranges = [
+            ('104.16.', 'Cloudflare', 'global'),
+            ('104.17.', 'Cloudflare', 'global'),
+            ('172.64.', 'Cloudflare', 'global'),
+            ('104.18.', 'Cloudflare', 'global')
+        ]
+        
+        # Azure ranges
+        azure_ranges = [
+            ('20.', 'Azure', 'global'),
+            ('40.', 'Azure', 'global'),
+            ('52.', 'Azure', 'global'),
+            ('104.', 'Azure', 'global')
+        ]
+        
+        for prefix, provider, geo in aws_ranges + gcp_ranges + cf_ranges + azure_ranges:
+            if ip.startswith(prefix):
+                return provider, geo
+                
+        return None, None
+    
+    def _analyze_email_infrastructure(self, mx_records):
+        """Analyze MX records for email provider and security patterns."""
+        providers = set()
+        security_services = set()
+        
+        for mx in mx_records:
+            mx_lower = str(mx).lower()
+            
+            # Email providers
+            if any(g in mx_lower for g in ['google.com', 'googlemail.com', 'aspmx']):
+                providers.add('Google Workspace')
+            elif any(m in mx_lower for m in ['outlook.com', 'protection.outlook.com']):
+                providers.add('Microsoft 365')
+            elif 'proofpoint' in mx_lower:
+                providers.add('Proofpoint')
+                security_services.add('email_security')
+            elif 'mimecast' in mx_lower:
+                providers.add('Mimecast')
+                security_services.add('email_security')
+            elif 'barracuda' in mx_lower:
+                providers.add('Barracuda')
+                security_services.add('email_security')
+            elif any(s in mx_lower for s in ['mailgun', 'sendgrid', 'ses']):
+                providers.add('Transactional Email Service')
+                
+        if providers:
+            self.intelligence['email_provider'] = list(providers)
+        if security_services:
+            self.intelligence['security_stack'].extend(security_services)
+    
+    def _analyze_nameserver_patterns(self, ns_records):
+        """Analyze nameserver patterns for hosting and management insights."""
+        ns_providers = set()
+        
+        for ns in ns_records:
+            ns_lower = str(ns).lower()
+            
+            if 'cloudflare' in ns_lower:
+                ns_providers.add('Cloudflare')
+                self.intelligence['cdn_provider'] = 'Cloudflare'
+            elif 'amazonaws' in ns_lower:
+                ns_providers.add('AWS Route53')
+            elif 'googledomains' in ns_lower:
+                ns_providers.add('Google Domains')
+            elif 'dnsmadeeasy' in ns_lower:
+                ns_providers.add('DNS Made Easy')
+            elif 'ultradns' in ns_lower:
+                ns_providers.add('UltraDNS')
+            elif any(managed in ns_lower for managed in ['ns1.com', 'dnsimple', 'route53']):
+                ns_providers.add('Managed DNS')
+                
+        if ns_providers:
+            self.intelligence['technology_stack'].extend(ns_providers)
+    
+    def _analyze_technology_stack(self, txt_records):
+        """Analyze TXT records for technology stack and service verification."""
+        services = set()
+        
+        for record in txt_records:
+            record_lower = record.lower()
+            
+            # Service verifications
+            if 'google-site-verification' in record_lower:
+                services.add('Google Services')
+            elif 'facebook-domain-verification' in record_lower:
+                services.add('Facebook Business')
+            elif 'ms=' in record_lower:
+                services.add('Microsoft Services')
+            elif 'apple-domain-verification' in record_lower:
+                services.add('Apple Services')
+            elif 'atlassian-domain-verification' in record_lower:
+                services.add('Atlassian Suite')
+            elif 'zoom-domain-verification' in record_lower:
+                services.add('Zoom')
+            elif 'shopify' in record_lower:
+                services.add('Shopify')
+                self.intelligence['category'] = 'ecommerce'
+            elif 'hubspot' in record_lower:
+                services.add('HubSpot')
+                self.intelligence['category'] = 'marketing'
+            elif 'salesforce' in record_lower:
+                services.add('Salesforce')
+                self.intelligence['category'] = 'enterprise'
+                
+        if services:
+            self.intelligence['technology_stack'].extend(services)
+    
+    def _analyze_service_patterns(self, cname_records):
+        """Analyze CNAME patterns for hosted services and CDN usage."""
+        for cname in cname_records:
+            cname_lower = str(cname).lower()
+            
+            if any(cdn in cname_lower for cdn in ['cloudfront', 'fastly', 'maxcdn', 'keycdn']):
+                self.intelligence['cdn_provider'] = 'CDN Service'
+            elif 'shopify' in cname_lower:
+                self.intelligence['category'] = 'ecommerce'
+            elif 'wordpress' in cname_lower:
+                self.intelligence['technology_stack'].append('WordPress')
+            elif 'github' in cname_lower:
+                self.intelligence['technology_stack'].append('GitHub Pages')
+    
+    def _determine_organization_type(self):
+        """Determine organization type based on domain patterns and services."""
+        domain_lower = self.domain_name.lower()
+        
+        # Government domains
+        if domain_lower.endswith('.gov') or domain_lower.endswith('.mil'):
+            self.intelligence['organization_type'] = 'government'
+            self.intelligence['category'] = 'government'
+        # Educational domains
+        elif domain_lower.endswith('.edu') or domain_lower.endswith('.ac.'):
+            self.intelligence['organization_type'] = 'education'
+            self.intelligence['category'] = 'education'
+        # Non-profit domains
+        elif domain_lower.endswith('.org'):
+            self.intelligence['organization_type'] = 'non_profit'
+        # Commercial domains with specific patterns
+        elif any(term in domain_lower for term in ['bank', 'financial', 'credit']):
+            self.intelligence['organization_type'] = 'financial'
+            self.intelligence['category'] = 'financial'
+        elif any(term in domain_lower for term in ['health', 'medical', 'hospital']):
+            self.intelligence['organization_type'] = 'healthcare'
+            self.intelligence['category'] = 'healthcare'
+        elif any(term in domain_lower for term in ['shop', 'store', 'buy', 'cart']):
+            self.intelligence['organization_type'] = 'ecommerce'
+            self.intelligence['category'] = 'ecommerce'
+    
+    def _assess_infrastructure_complexity(self, dns_records):
+        """Assess infrastructure complexity based on DNS record patterns."""
+        complexity_score = 0
+        
+        # Multiple A records suggest load balancing
+        if 'A' in dns_records and len(dns_records['A']) > 2:
+            complexity_score += 2
+            
+        # Multiple MX records suggest redundancy
+        if 'MX' in dns_records and len(dns_records['MX']) > 1:
+            complexity_score += 1
+            
+        # Many TXT records suggest multiple services
+        if 'TXT' in dns_records and len(dns_records['TXT']) > 5:
+            complexity_score += 2
+            
+        # Multiple NS records suggest managed DNS
+        if 'NS' in dns_records and len(dns_records['NS']) > 2:
+            complexity_score += 1
+        
+        # CNAME records suggest service delegation
+        if 'CNAME' in dns_records and len(dns_records['CNAME']) > 0:
+            complexity_score += 1
+            
+        if complexity_score >= 5:
+            self.intelligence['infrastructure_complexity'] = 'enterprise'
+        elif complexity_score >= 3:
+            self.intelligence['infrastructure_complexity'] = 'moderate'
+        else:
+            self.intelligence['infrastructure_complexity'] = 'simple'
+    
+    def get_targeted_subdomains(self):
+        """Generate targeted subdomain lists based on domain intelligence."""
+        base_subdomains = []
+        
+        # Category-specific subdomains
+        if self.intelligence['category'] == 'ecommerce':
+            base_subdomains.extend(['shop', 'store', 'cart', 'checkout', 'pay', 'payments', 'secure'])
+        elif self.intelligence['category'] == 'financial':
+            base_subdomains.extend(['secure', 'banking', 'online', 'mobile', 'portal', 'login'])
+        elif self.intelligence['category'] == 'healthcare':
+            base_subdomains.extend(['patient', 'portal', 'secure', 'records', 'appointment'])
+        elif self.intelligence['category'] == 'education':
+            base_subdomains.extend(['student', 'faculty', 'portal', 'library', 'courses', 'lms'])
+        elif self.intelligence['category'] == 'government':
+            base_subdomains.extend(['portal', 'services', 'citizen', 'secure', 'public'])
+            
+        # Hosting provider specific subdomains
+        if 'AWS' in str(self.intelligence.get('hosting_provider', [])):
+            base_subdomains.extend(['s3', 'cdn', 'assets', 'static'])
+        if 'Google Cloud' in str(self.intelligence.get('hosting_provider', [])):
+            base_subdomains.extend(['storage', 'cdn', 'compute'])
+        if 'Cloudflare' in str(self.intelligence.get('cdn_provider', '')):
+            base_subdomains.extend(['cdn', 'assets', 'static', 'media'])
+            
+        # Technology stack specific subdomains
+        if 'WordPress' in self.intelligence.get('technology_stack', []):
+            base_subdomains.extend(['blog', 'wp', 'wordpress'])
+        if 'Shopify' in self.intelligence.get('technology_stack', []):
+            base_subdomains.extend(['shop', 'store', 'checkout'])
+        if 'Salesforce' in self.intelligence.get('technology_stack', []):
+            base_subdomains.extend(['crm', 'sales', 'force'])
+            
+        return list(set(base_subdomains))
+    
+    def get_enhanced_dkim_selectors(self):
+        """Generate enhanced DKIM selector lists based on domain intelligence."""
+        enhanced_selectors = []
+        
+        # Organization type specific selectors
+        if self.intelligence.get('organization_type') == 'financial':
+            enhanced_selectors.extend(['secure', 'bank', 'fin', 'safe'])
+        elif self.intelligence.get('organization_type') == 'healthcare':
+            enhanced_selectors.extend(['hipaa', 'secure', 'med', 'health'])
+        elif self.intelligence.get('organization_type') == 'government':
+            enhanced_selectors.extend(['gov', 'secure', 'official', 'fed'])
+        elif self.intelligence.get('organization_type') == 'education':
+            enhanced_selectors.extend(['edu', 'academic', 'university', 'college'])
+            
+        # Infrastructure complexity selectors
+        if self.intelligence.get('infrastructure_complexity') == 'enterprise':
+            enhanced_selectors.extend(['enterprise', 'corp', 'internal', 'prod', 'staging'])
+            
+        return enhanced_selectors
+
+
 class Domain:
     """
     Represents a domain and includes methods to perform various checks.
@@ -41,6 +376,8 @@ class Domain:
         """Store the domain `name` and DNS `query_delay`."""
         self.name = name
         self.query_delay = query_delay
+        self.intelligence = DomainIntelligence(name)
+        self.dns_cache = {}  # Cache DNS records for intelligence analysis
 
     def get_dns_records(self, record_type):
         """
@@ -100,6 +437,38 @@ class Domain:
         except Exception as e:
             print(f"Error checking wildcard records for {self.name}: {e}")
             return False
+
+    def get_enhanced_subdomains(self, base_subdomains):
+        """Get enhanced subdomain list based on domain intelligence analysis."""
+        try:
+            # Perform domain intelligence analysis if not already done
+            if not self.dns_cache:
+                # Quick DNS collection for intelligence
+                for record_type in ['A', 'MX', 'NS', 'TXT', 'CNAME']:
+                    try:
+                        records, _ = self.get_dns_records(record_type)
+                        if records:
+                            self.dns_cache[record_type] = records
+                    except Exception:
+                        continue
+                        
+                # Analyze domain patterns
+                self.intelligence.analyze_domain_patterns(self.dns_cache)
+            
+            # Get targeted subdomains from intelligence
+            targeted_subs = self.intelligence.get_targeted_subdomains()
+            
+            # Combine with base subdomains, prioritizing intelligence-based ones
+            enhanced_list = targeted_subs + [sub for sub in base_subdomains if sub not in targeted_subs]
+            
+            if targeted_subs:
+                console.print(f"  [dim]Domain intelligence added {len(targeted_subs)} targeted subdomains[/dim]")
+                
+            return enhanced_list
+            
+        except Exception as e:
+            console.print(f"  [dim]Intelligence enhancement failed: {e}[/dim]")
+            return base_subdomains
 
     def enumerate_subdomains(self, subdomains, max_workers=10, recursive=True):
         """
@@ -494,13 +863,14 @@ class Domain:
         
         return results, valid_selectors
 
-    def discover_dkim_selectors(self, use_common_selectors=True, use_brute_force=False):
+    def discover_dkim_selectors(self, use_common_selectors=True, use_brute_force=False, config_manager=None):
         """
-        Discover DKIM selectors using smart techniques with better user experience.
+        Discover DKIM selectors using enhanced smart techniques with provider-specific targeting.
         
         Args:
-            use_common_selectors (bool): Check against common selector names
+            use_common_selectors (bool): Check against top 40 common selector names
             use_brute_force (bool): Attempt intelligent brute force with patterns
+            config_manager: Configuration manager for provider-specific settings
             
         Returns:
             dict: Dictionary with discovery results and metadata
@@ -515,9 +885,9 @@ class Domain:
             'intelligence_sources': []
         }
         
-        # 1. Email platform intelligence (fast and targeted)
+        # 1. Enhanced email platform intelligence with provider-specific targeting
         console.print("  [cyan]• Analyzing email platform for targeted discovery...[/cyan]")
-        platform_selectors = self._get_platform_specific_selectors()
+        platform_selectors = self._get_platform_specific_selectors(config_manager)
         if platform_selectors:
             results, valid = self.check_dkim(platform_selectors, show_progress=False)
             discovery_results['found_selectors'].update({k: v for k, v in results.items() if v})
@@ -532,17 +902,28 @@ class Domain:
             discovery_results['found_selectors'].update(spf_selectors)
             discovery_results['intelligence_sources'].append(f"SPF analysis ({len(spf_selectors)} found)")
         
-        # 3. Enhanced common selectors (only if not many found yet)
-        if use_common_selectors and len(discovery_results['found_selectors']) < 3:
-            console.print("  [cyan]• Checking common DKIM selector patterns...[/cyan]")
-            common_selectors = self._get_smart_common_selectors()
+        # 3. Domain intelligence enhanced selectors
+        if hasattr(self, 'intelligence') and self.intelligence:
+            console.print("  [cyan]• Applying domain intelligence for DKIM discovery...[/cyan]")
+            intel_selectors = self.intelligence.get_enhanced_dkim_selectors()
+            if intel_selectors:
+                results, valid = self.check_dkim(intel_selectors, show_progress=False)
+                discovery_results['found_selectors'].update({k: v for k, v in results.items() if v})
+                discovery_results['total_checked'] += len(intel_selectors)
+                if valid:
+                    discovery_results['intelligence_sources'].append(f"Domain intelligence ({len(valid)} found)")
+        
+        # 4. Top 40 common selectors (research-based for maximum efficiency)
+        if use_common_selectors and len(discovery_results['found_selectors']) < 5:
+            console.print("  [cyan]• Checking top 40 DKIM selector patterns...[/cyan]")
+            common_selectors = self._get_smart_common_selectors(config_manager)
             results, valid = self.check_dkim(common_selectors, show_progress=len(common_selectors) > 20)
             discovery_results['found_selectors'].update({k: v for k, v in results.items() if v})
             discovery_results['total_checked'] += len(common_selectors)
             if valid:
-                discovery_results['intelligence_sources'].append(f"Common patterns ({len(valid)} found)")
+                discovery_results['intelligence_sources'].append(f"Top 40 patterns ({len(valid)} found)")
         
-        # 4. Advanced pattern discovery (only if brute force enabled)
+        # 5. Advanced pattern discovery (only if brute force enabled)
         if use_brute_force and len(discovery_results['found_selectors']) > 0:
             console.print("  [cyan]• Performing intelligent pattern-based discovery...[/cyan]")
             pattern_selectors = self._intelligent_pattern_discovery(discovery_results['found_selectors'])
@@ -661,7 +1042,7 @@ class Domain:
         
         return selectors
 
-    def _get_platform_specific_selectors(self):
+    def _get_platform_specific_selectors(self, config_manager=None):
         """Get selectors based on detected email platform for targeted discovery."""
         try:
             # Quick MX and SPF analysis to determine platform
@@ -694,7 +1075,7 @@ class Domain:
                     platform_selectors.update(['mailgun', 'mg', 'mta'])
                     
                 elif 'sendgrid' in mx_host:
-                    platform_selectors.update(['sendgrid', 'sg', 'em'])
+                    platform_selectors.update(['sendgrid', 's1', 's2'])
                     
             # Analyze SPF records for additional clues
             for spf_record in spf_data.get('records', []):
@@ -711,57 +1092,31 @@ class Domain:
         except Exception:
             return []
     
-    def _get_smart_common_selectors(self):
-        """Get comprehensive list of common selectors based on industry research."""
-        import datetime
-        current_year = datetime.datetime.now().year
-        
-        # Major Email Provider Selectors (from guidance)
-        provider_selectors = [
-            # Google Workspace
-            "google", "g1", "g2",
-            # Microsoft 365
-            "selector1", "selector2", "s1", "s2",
-            # MailChimp/Mandrill
-            "k1", "k2", "k3",
-            # Constant Contact
-            "ctct1", "ctct2",
-            # SendGrid
-            "s1", "sg1", "sg2",
-            # Zendesk
-            "zendesk1", "zendesk2",
-            # Amazon SES
-            "aws", "ses", "amazon",
-            # Other major providers
-            "mailgun", "postmark", "sparkpost"
+    def _get_smart_common_selectors(self, config_manager=None):
+        """Get top 40 DKIM selectors based on usage statistics and research for maximum discovery efficiency."""
+        # Top 40 selectors from research, ordered by frequency
+        top_40_selectors = [
+            # Top frequency selectors (usage statistics)
+            "mail", "default", "dkim", "k1", "google", "selector2", "key1", "key2", "selector1",
+            # High-frequency generic patterns
+            "dk", "s1", "s2", "m1", "private", "test", "prod", "smtp", "mta", "mx", "class", "root",
+            # Provider-specific selectors
+            "ctct1", "ctct2", "zendesk1", "zendesk2", "sm", "litesrv", "sig1",
+            # Time-based patterns (most common)
+            "200608", "20150623", "20221208", "20230601", "s1024-2013-q3", "scph0920", "scph1122",
+            # Numeric patterns
+            "10dkim1", "11dkim1", "12dkim1", "13dkim1", "s1024", "s1024a", "dkim1024"
         ]
         
-        # Generic common patterns
-        common_patterns = [
-            "default", "dkim", "mail", "email", "key", "sig", "main",
-            "primary", "secondary", "backup", "auto", "service"
-        ]
+        # If config manager is available, get configured selectors
+        if config_manager:
+            config_selectors = config_manager.get_setting("DKIM", "selectors", fallback=[])
+            # Merge with top 40, prioritizing configured selectors
+            all_selectors = list(dict.fromkeys(config_selectors + top_40_selectors))
+        else:
+            all_selectors = top_40_selectors
         
-        # Current and recent date-based selectors (focused approach)
-        date_selectors = []
-        for months_back in range(6):  # Last 6 months
-            date = datetime.datetime.now() - datetime.timedelta(days=30 * months_back)
-            date_selectors.extend([
-                f"{date.year}{date.month:02d}",
-                f"{str(date.year)[-2:]}{date.month:02d}",
-                f"{date.year}m{date.month:02d}"
-            ])
-        
-        # Quarterly and yearly patterns
-        for quarter in range(1, 5):
-            date_selectors.extend([
-                f"{current_year}q{quarter}",
-                f"{str(current_year)[-2:]}q{quarter}"
-            ])
-        
-        # Combine all selectors and remove duplicates
-        all_selectors = provider_selectors + common_patterns + date_selectors
-        return list(set(all_selectors))
+        return all_selectors[:40]  # Ensure we maintain the top 40 limit for efficiency
 
     def _intelligent_pattern_discovery(self, found_selectors):
         """Generate additional selectors based on patterns found in existing ones."""
@@ -1204,10 +1559,11 @@ class Inspector:
     Coordinates the inspection process for a given domain.
     """
 
-    def __init__(self, domain, config):
+    def __init__(self, domain, config, config_manager=None):
         """Create a Domain for `domain` and retain `config` settings."""
         self.domain = Domain(domain, query_delay=config.get("query_delay", QUERY_DELAY))
         self.config = config  # Configuration settings
+        self.config_manager = config_manager  # Store config manager for DKIM provider targeting
 
     def _detect_email_platform(self):
         """Detect the email platform (Google, Microsoft, etc.) based on MX records and SPF."""
@@ -1259,6 +1615,62 @@ class Inspector:
             
         except Exception:
             return "Unknown"
+    
+    def _display_domain_intelligence(self):
+        """Display domain intelligence summary for enhanced discovery context."""
+        try:
+            # Trigger intelligence analysis if not already done
+            if not self.domain.dns_cache:
+                for record_type in ['A', 'MX', 'NS', 'TXT']:
+                    try:
+                        records, _ = self.domain.get_dns_records(record_type)
+                        if records:
+                            self.domain.dns_cache[record_type] = records
+                    except Exception:
+                        continue
+                
+                self.domain.intelligence.analyze_domain_patterns(self.domain.dns_cache)
+            
+            intel = self.domain.intelligence.intelligence
+            
+            # Create intelligence summary
+            intelligence_items = []
+            
+            if intel.get('category') != 'unknown':
+                intelligence_items.append(f"Category: {intel['category'].title()}")
+                
+            if intel.get('organization_type'):
+                intelligence_items.append(f"Type: {intel['organization_type'].replace('_', ' ').title()}")
+                
+            if intel.get('hosting_provider'):
+                providers = intel['hosting_provider']
+                if isinstance(providers, list):
+                    intelligence_items.append(f"Hosting: {', '.join(providers)}")
+                else:
+                    intelligence_items.append(f"Hosting: {providers}")
+                    
+            if intel.get('email_provider'):
+                providers = intel['email_provider']
+                if isinstance(providers, list):
+                    intelligence_items.append(f"Email: {', '.join(providers)}")
+                else:
+                    intelligence_items.append(f"Email: {providers}")
+                    
+            if intel.get('cdn_provider'):
+                intelligence_items.append(f"CDN: {intel['cdn_provider']}")
+                
+            if intel.get('infrastructure_complexity') != 'simple':
+                intelligence_items.append(f"Infrastructure: {intel['infrastructure_complexity'].title()}")
+                
+            if intel.get('security_stack'):
+                security = ', '.join(intel['security_stack'])
+                intelligence_items.append(f"Security: {security}")
+                
+            if intelligence_items:
+                console.print(f"[dim]Domain Intelligence: {' | '.join(intelligence_items)}[/dim]")
+                
+        except Exception as e:
+            console.print(f"[dim]Domain intelligence analysis failed: {e}[/dim]")
 
     def _detect_email_security_provider(self):
         """Detect email security providers based on MX records and DMARC."""
@@ -1333,6 +1745,9 @@ class Inspector:
             console.print(f"[cyan]Running quick scan: {', '.join(components)}[/cyan]\n")
         else:
             console.print(f"[cyan]Running components: {', '.join(components)}[/cyan]\n")
+        
+        # Display domain intelligence summary
+        self._display_domain_intelligence()
         
         results = {"domain": self.domain.name, "components": components}
 
@@ -1495,7 +1910,8 @@ class Inspector:
             if self.config.get("dkim_discovery", True):
                 discovery_results = self.domain.discover_dkim_selectors(
                     use_common_selectors=True, 
-                    use_brute_force=self.config.get("dkim_brute_force", False)
+                    use_brute_force=self.config.get("dkim_brute_force", False),
+                    config_manager=self.config_manager
                 )
                 all_found_selectors.update(discovery_results['found_selectors'])
                 discovery_sources.extend(discovery_results['intelligence_sources'])
@@ -1792,8 +2208,10 @@ class Inspector:
         # 1. Wordlist-based enumeration
         if self.config.get("subdomains"):
             console.print("\n[*] Performing targeted subdomain enumeration...")
+            # Enhance subdomains with domain intelligence
+            enhanced_subdomains = self.domain.get_enhanced_subdomains(self.config["subdomains"])
             found_subs = self.domain.enumerate_subdomains(
-                self.config["subdomains"], 
+                enhanced_subdomains, 
                 max_workers=self.config.get("max_workers", 10),
                 recursive=self.config.get("recursive", True)
             )
@@ -2498,7 +2916,7 @@ class ConfigManager:
                 return [v.strip() for v in value.split(",")]
             if value.upper() == "ALL":
                 return ALL_RECORD_TYPES
-            if setting == "selectors" or isinstance(fallback, list):
+            if setting.endswith("_selectors") or setting == "selectors" or isinstance(fallback, list):
                 return [value.strip()]
 
         if isinstance(value, list):
@@ -2658,6 +3076,7 @@ def main():
             "run_web": run_web,
             "quick_mode": args.quick,
         },
+        config_manager
     )
 
     # Perform the inspection
