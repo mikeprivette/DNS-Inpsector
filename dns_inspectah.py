@@ -1517,7 +1517,17 @@ class Domain:
             'netlify.com': {'provider': 'Netlify', 'service_type': 'static_hosting', 'confidence': 0.99},
             'vercel.app': {'provider': 'Vercel', 'service_type': 'static_hosting', 'confidence': 0.99},
             'github.io': {'provider': 'GitHub Pages', 'service_type': 'static_hosting', 'confidence': 0.99},
-            'fastly.com': {'provider': 'Fastly', 'service_type': 'cdn', 'confidence': 0.95}
+            'fastly.com': {'provider': 'Fastly', 'service_type': 'cdn', 'confidence': 0.95},
+            'maxcdn.com': {'provider': 'MaxCDN', 'service_type': 'cdn', 'confidence': 0.95},
+            'keycdn.com': {'provider': 'KeyCDN', 'service_type': 'cdn', 'confidence': 0.95},
+            'stackpathdns.com': {'provider': 'StackPath', 'service_type': 'cdn', 'confidence': 0.95},
+            'cdnjs.com': {'provider': 'Cloudflare', 'service_type': 'cdn', 'confidence': 0.90},
+            'jsdelivr.net': {'provider': 'jsDelivr', 'service_type': 'cdn', 'confidence': 0.90},
+            'unpkg.com': {'provider': 'unpkg', 'service_type': 'cdn', 'confidence': 0.90},
+            'akamai.net': {'provider': 'Akamai', 'service_type': 'cdn', 'confidence': 0.95},
+            'akamaized.net': {'provider': 'Akamai', 'service_type': 'cdn', 'confidence': 0.95},
+            'bunnycdn.com': {'provider': 'BunnyCDN', 'service_type': 'cdn', 'confidence': 0.95},
+            'b-cdn.net': {'provider': 'BunnyCDN', 'service_type': 'cdn', 'confidence': 0.95}
         }
         
         for cname in all_records["CNAME"]:
@@ -1677,7 +1687,9 @@ class Domain:
                 score_breakdown["dns_security"]["score"] += 8
                 score_breakdown["dns_security"]["details"].append("DNSSEC enabled but has validation issues (+8)")
         else:
-            score_breakdown["dns_security"]["details"].append("DNSSEC not enabled (-15)")
+            # Deduct points for missing DNSSEC
+            score_breakdown["dns_security"]["score"] = max(0, score_breakdown["dns_security"]["score"] - 5)
+            score_breakdown["dns_security"]["details"].append("DNSSEC not enabled (-5)")
         
         caa = results.get("caa", {})
         if caa.get("present"):
@@ -1688,7 +1700,9 @@ class Domain:
                 score_breakdown["dns_security"]["score"] += 5
                 score_breakdown["dns_security"]["details"].append("CAA records present but restrictive (+5)")
         else:
-            score_breakdown["dns_security"]["details"].append("No CAA records (-10)")
+            # Deduct points for missing CAA records
+            score_breakdown["dns_security"]["score"] = max(0, score_breakdown["dns_security"]["score"] - 3)
+            score_breakdown["dns_security"]["details"].append("No CAA records (-3)")
         
         # Email Security Scoring (35 points)
         dmarc = results.get("dmarc", {})
@@ -1704,22 +1718,31 @@ class Domain:
                 score_breakdown["email_security"]["score"] += 5
                 score_breakdown["email_security"]["details"].append("DMARC policy set to 'none' (+5)")
         else:
-            score_breakdown["email_security"]["details"].append("No DMARC policy (-15)")
+            # Deduct points for missing DMARC
+            score_breakdown["email_security"]["score"] = max(0, score_breakdown["email_security"]["score"] - 10)
+            score_breakdown["email_security"]["details"].append("No DMARC policy (-10)")
         
         spf = results.get("spf", {})
         spf_records = spf.get("records", [])
         if spf_records:
-            if not spf.get("soft") and not spf.get("neutral"):
+            # Check SPF policy strictness
+            spf_record_text = ' '.join(spf_records).lower()
+            if '-all' in spf_record_text:  # Hard fail
                 score_breakdown["email_security"]["score"] += 10
                 score_breakdown["email_security"]["details"].append("SPF properly configured with hard fail (+10)")
-            elif spf.get("soft"):
+            elif '~all' in spf_record_text:  # Soft fail
                 score_breakdown["email_security"]["score"] += 6
                 score_breakdown["email_security"]["details"].append("SPF configured with soft fail (+6)")
-            else:
+            elif '?all' in spf_record_text or '+all' in spf_record_text:  # Neutral/pass
                 score_breakdown["email_security"]["score"] += 3
-                score_breakdown["email_security"]["details"].append("SPF configured but neutral (+3)")
+                score_breakdown["email_security"]["details"].append("SPF configured but permissive (+3)")
+            else:
+                score_breakdown["email_security"]["score"] += 5
+                score_breakdown["email_security"]["details"].append("SPF record present (+5)")
         else:
-            score_breakdown["email_security"]["details"].append("No SPF record (-10)")
+            # Deduct points for missing SPF
+            score_breakdown["email_security"]["score"] = max(0, score_breakdown["email_security"]["score"] - 8)
+            score_breakdown["email_security"]["details"].append("No SPF record (-8)")
         
         dkim = results.get("dkim", {})
         found_selectors = dkim.get("found_selectors", {})
@@ -1731,7 +1754,9 @@ class Domain:
             score_breakdown["email_security"]["score"] += 7
             score_breakdown["email_security"]["details"].append("Single DKIM selector found (+7)")
         else:
-            score_breakdown["email_security"]["details"].append("No DKIM selectors found (-10)")
+            # Deduct points for missing DKIM
+            score_breakdown["email_security"]["score"] = max(0, score_breakdown["email_security"]["score"] - 5)
+            score_breakdown["email_security"]["details"].append("No DKIM selectors found (-5)")
         
         # Advanced Email Security Bonus
         bimi = results.get("bimi", {})
@@ -1764,7 +1789,9 @@ class Domain:
                 score_breakdown["web_security"]["score"] += 5
                 score_breakdown["web_security"]["details"].append("Strong SSL/TLS configuration (+5)")
         else:
-            score_breakdown["web_security"]["details"].append("Invalid or missing SSL/TLS certificate (-15)")
+            # Deduct points for invalid/missing SSL
+            score_breakdown["web_security"]["score"] = max(0, score_breakdown["web_security"]["score"] - 12)
+            score_breakdown["web_security"]["details"].append("Invalid or missing SSL/TLS certificate (-12)")
         
         # Security headers check (if available)
         security_headers = results.get("security_headers", {})
@@ -3061,6 +3088,60 @@ class Inspector:
             # Web security section skipped
             results["ssl"] = {}
             results["security_headers"] = {}
+        
+        # Cloud Infrastructure Summary
+        cloud_infrastructure = results.get("cloud_infrastructure", {})
+        if cloud_infrastructure and (cloud_infrastructure.get("cloud_providers") or cloud_infrastructure.get("cdn_providers")):
+            console.print("\n[bold blue]===== INFRASTRUCTURE SUMMARY =====[/bold blue]")
+            console.print("  [dim]Detected cloud services and infrastructure providers[/dim]")
+            
+            # Create infrastructure summary table
+            infra_table = Table(title="Infrastructure Analysis")
+            infra_table.add_column("Category", style="cyan", no_wrap=True)
+            infra_table.add_column("Providers", style="green")
+            infra_table.add_column("Services", style="magenta", max_width=40)
+            infra_table.add_column("Confidence", style="yellow", justify="center")
+            
+            # Add cloud providers
+            if cloud_infrastructure.get("cloud_providers"):
+                providers = ', '.join(cloud_infrastructure["cloud_providers"])
+                services = cloud_infrastructure.get("detected_services", [])
+                cloud_services = [s for s in services if any(p in s for p in cloud_infrastructure["cloud_providers"])]
+                service_text = ', '.join(cloud_services[:3])
+                if len(cloud_services) > 3:
+                    service_text += f" (+{len(cloud_services)-3} more)"
+                confidence = "High" if len(cloud_infrastructure["cloud_providers"]) > 0 else "Medium"
+                infra_table.add_row("Cloud Hosting", providers, service_text, confidence)
+            
+            # Add CDN providers
+            if cloud_infrastructure.get("cdn_providers"):
+                cdn_providers = ', '.join(cloud_infrastructure["cdn_providers"])
+                infra_table.add_row("CDN Services", cdn_providers, "Content Delivery", "High")
+            
+            # Add email services
+            if cloud_infrastructure.get("email_services"):
+                email_providers = ', '.join(cloud_infrastructure["email_services"])
+                infra_table.add_row("Email Services", email_providers, "Email Hosting", "High")
+            
+            console.print(infra_table)
+            
+            # Infrastructure insights
+            total_services = len(cloud_infrastructure.get("detected_services", []))
+            if total_services > 0:
+                console.print(f"\n[bold]Infrastructure Insights:[/bold]")
+                console.print(f"  📊 Total services detected: {total_services}")
+                
+                # Analyze infrastructure complexity
+                complexity = "Enterprise" if total_services > 5 else "Standard" if total_services > 2 else "Basic"
+                console.print(f"  🏗️  Infrastructure complexity: {complexity}")
+                
+                # Security recommendations based on infrastructure
+                if cloud_infrastructure.get("cdn_providers"):
+                    console.print("  ✅ CDN usage detected - good for performance and DDoS protection")
+                if len(cloud_infrastructure.get("cloud_providers", [])) > 1:
+                    console.print("  ⚠️  Multiple cloud providers - ensure consistent security policies")
+                if not cloud_infrastructure.get("cdn_providers"):
+                    console.print("  💡 Consider implementing CDN for better performance and security")
         
         # Security Score Summary
         console.print("\n[bold cyan]===== SECURITY SCORE =====[/bold cyan]")
