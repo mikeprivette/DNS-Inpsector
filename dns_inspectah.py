@@ -3,6 +3,10 @@
 import dns.resolver
 import dns.query
 import dns.zone
+import dns.dnssec
+import dns.message
+import dns.rdataclass
+import dns.rdatatype
 from dns import rdatatype
 import ssl
 import socket
@@ -13,6 +17,7 @@ import pyfiglet
 import time
 import datetime
 import json
+import csv
 import threading
 import itertools
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -988,14 +993,848 @@ class Domain:
         
         return selectors
 
+    def check_bimi(self):
+        """Comprehensive BIMI (Brand Indicators for Message Identification) analysis."""
+        result = {
+            "present": False,
+            "records": [],
+            "selectors": [],
+            "logo_url": None,
+            "authority_url": None,
+            "version": None,
+            "issues": [],
+            "recommendations": []
+        }
+        
+        # Common BIMI selectors to check
+        bimi_selectors = ['default', 'v1', 'selector1', 'selector2', 'bimi']
+        
+        try:
+            for selector in bimi_selectors:
+                domain = f"{selector}._bimi.{self.name}"
+                records, _ = self.get_txt_record(domain)
+                
+                for record in records:
+                    if "v=BIMI1" in record:
+                        result["present"] = True
+                        result["records"].append(record)
+                        result["selectors"].append(selector)
+                        
+                        # Parse BIMI record
+                        tags = {}
+                        for part in record.split(";"):
+                            if "=" in part:
+                                key, value = part.strip().split("=", 1)
+                                tags[key.strip()] = value.strip()
+                        
+                        result["version"] = tags.get("v")
+                        result["logo_url"] = tags.get("l")
+                        result["authority_url"] = tags.get("a")
+                        
+                        # Validate BIMI record
+                        if not result["logo_url"]:
+                            result["issues"].append("Missing logo URL (l= tag)")
+                        elif not result["logo_url"].startswith("https://"):
+                            result["issues"].append("Logo URL must use HTTPS")
+                        
+                        if result["authority_url"] and not result["authority_url"].startswith("https://"):
+                            result["issues"].append("Authority URL must use HTTPS")
+                        
+                        # Check for proper DMARC policy (required for BIMI)
+                        dmarc_result = self.check_dmarc()
+                        if not dmarc_result["present"]:
+                            result["issues"].append("BIMI requires DMARC policy to be effective")
+                        elif dmarc_result["policy"] not in ["quarantine", "reject"]:
+                            result["issues"].append("BIMI requires DMARC policy of 'quarantine' or 'reject'")
+        
+        except Exception as e:
+            result["issues"].append(f"Error checking BIMI records: {str(e)}")
+        
+        # Generate recommendations
+        if not result["present"]:
+            result["recommendations"].append("Consider implementing BIMI for brand visibility in email clients")
+        elif result["issues"]:
+            result["recommendations"].append("Fix BIMI configuration issues for optimal brand display")
+        
+        return result
+
+    def check_mta_sts(self):
+        """Check MTA-STS (Mail Transfer Agent Strict Transport Security) policy."""
+        result = {
+            "present": False,
+            "txt_record": None,
+            "policy_found": False,
+            "policy_content": None,
+            "version": None,
+            "id": None,
+            "issues": [],
+            "recommendations": []
+        }
+        
+        try:
+            # Check for MTA-STS TXT record
+            domain = f"_mta-sts.{self.name}"
+            records, _ = self.get_txt_record(domain)
+            
+            for record in records:
+                if "v=STSv1" in record:
+                    result["present"] = True
+                    result["txt_record"] = record
+                    
+                    # Parse MTA-STS record
+                    tags = {}
+                    for part in record.split(";"):
+                        if "=" in part:
+                            key, value = part.strip().split("=", 1)
+                            tags[key.strip()] = value.strip()
+                    
+                    result["version"] = tags.get("v")
+                    result["id"] = tags.get("id")
+                    
+                    # Try to fetch the policy file
+                    try:
+                        policy_url = f"https://mta-sts.{self.name}/.well-known/mta-sts.txt"
+                        response = requests.get(policy_url, timeout=10)
+                        if response.status_code == 200:
+                            result["policy_found"] = True
+                            result["policy_content"] = response.text
+                            
+                            # Parse policy content
+                            policy_lines = response.text.strip().split('\n')
+                            policy_dict = {}
+                            for line in policy_lines:
+                                if ':' in line:
+                                    key, value = line.split(':', 1)
+                                    policy_dict[key.strip()] = value.strip()
+                            
+                            # Validate policy
+                            if policy_dict.get('version') != 'STSv1':
+                                result["issues"].append("Policy version mismatch")
+                            
+                            mode = policy_dict.get('mode')
+                            if mode not in ['enforce', 'testing', 'none']:
+                                result["issues"].append(f"Invalid policy mode: {mode}")
+                            elif mode == 'none':
+                                result["issues"].append("MTA-STS policy is disabled (mode=none)")
+                            
+                            if not policy_dict.get('mx'):
+                                result["issues"].append("No MX hosts specified in policy")
+                                
+                        else:
+                            result["issues"].append(f"Could not fetch policy file (HTTP {response.status_code})")
+                    except Exception as e:
+                        result["issues"].append(f"Error fetching policy: {str(e)}")
+                    
+                    break
+        
+        except Exception as e:
+            result["issues"].append(f"Error checking MTA-STS: {str(e)}")
+        
+        # Generate recommendations
+        if not result["present"]:
+            result["recommendations"].append("Consider implementing MTA-STS for enhanced email security")
+        elif result["issues"]:
+            result["recommendations"].append("Fix MTA-STS configuration issues")
+        
+        return result
+
+    def check_tls_rpt(self):
+        """Check SMTP TLS Reporting (TLS-RPT) configuration."""
+        result = {
+            "present": False,
+            "records": [],
+            "version": None,
+            "rua": [],
+            "issues": [],
+            "recommendations": []
+        }
+        
+        try:
+            # Check for TLS-RPT record
+            domain = f"_smtp._tls.{self.name}"
+            records, _ = self.get_txt_record(domain)
+            
+            for record in records:
+                if "v=TLSRPTv1" in record:
+                    result["present"] = True
+                    result["records"].append(record)
+                    
+                    # Parse TLS-RPT record
+                    tags = {}
+                    for part in record.split(";"):
+                        if "=" in part:
+                            key, value = part.strip().split("=", 1)
+                            tags[key.strip()] = value.strip()
+                    
+                    result["version"] = tags.get("v")
+                    rua_value = tags.get("rua")
+                    if rua_value:
+                        # Handle multiple RUA addresses
+                        result["rua"] = [addr.strip() for addr in rua_value.split(",")]
+                    
+                    # Validate record
+                    if not result["rua"]:
+                        result["issues"].append("No reporting addresses specified (rua= tag missing)")
+                    else:
+                        for rua in result["rua"]:
+                            if not (rua.startswith("mailto:") or rua.startswith("https://")):
+                                result["issues"].append(f"Invalid RUA format: {rua}")
+                    
+                    break
+        
+        except Exception as e:
+            result["issues"].append(f"Error checking TLS-RPT: {str(e)}")
+        
+        # Generate recommendations
+        if not result["present"]:
+            result["recommendations"].append("Consider implementing TLS-RPT for SMTP security monitoring")
+        elif result["issues"]:
+            result["recommendations"].append("Fix TLS-RPT configuration issues")
+        
+        return result
+
+    def check_dnssec(self):
+        """Check DNSSEC validation and security chain."""
+        result = {
+            "enabled": False,
+            "valid": False,
+            "ds_records": [],
+            "dnskey_records": [],
+            "rrsig_records": [],
+            "issues": [],
+            "recommendations": [],
+            "validation_details": {}
+        }
+        
+        try:
+            # Check for DS records at parent zone
+            ds_records, _ = self.get_dns_records("DS")
+            result["ds_records"] = ds_records
+            
+            # Check for DNSKEY records
+            dnskey_records, _ = self.get_dns_records("DNSKEY")
+            result["dnskey_records"] = dnskey_records
+            
+            # Check for RRSIG records (signature records)
+            rrsig_records, _ = self.get_dns_records("RRSIG")
+            result["rrsig_records"] = rrsig_records
+            
+            # DNSSEC is enabled if we have any of these record types
+            if ds_records or dnskey_records or rrsig_records:
+                result["enabled"] = True
+            
+            # Try to validate DNSSEC chain
+            if result["enabled"]:
+                try:
+                    # Create a resolver that validates DNSSEC
+                    resolver = dns.resolver.Resolver()
+                    resolver.use_edns(0, dns.flags.DO, 4096)
+                    
+                    # Test with a simple A record query
+                    try:
+                        response = resolver.resolve(self.name, 'A')
+                        result["valid"] = True
+                        result["validation_details"]["a_record_validated"] = True
+                    except dns.resolver.NXDOMAIN:
+                        # Domain doesn't exist, but DNSSEC might still be configured
+                        result["validation_details"]["domain_not_found"] = True
+                    except dns.dnssec.ValidationFailure as e:
+                        result["issues"].append(f"DNSSEC validation failed: {str(e)}")
+                        result["validation_details"]["validation_error"] = str(e)
+                    except Exception as e:
+                        result["issues"].append(f"DNSSEC validation error: {str(e)}")
+                        result["validation_details"]["general_error"] = str(e)
+                
+                except Exception as e:
+                    result["issues"].append(f"Error setting up DNSSEC validation: {str(e)}")
+            
+            # Analyze DNSSEC configuration
+            if not result["enabled"]:
+                result["recommendations"].append("Consider implementing DNSSEC for enhanced DNS security")
+            else:
+                if not ds_records:
+                    result["issues"].append("DNSKEY found but no DS records at parent zone")
+                    result["recommendations"].append("Ensure DS records are published at parent zone")
+                
+                if not dnskey_records:
+                    result["issues"].append("DS records found but no DNSKEY records")
+                    result["recommendations"].append("Publish DNSKEY records for your zone")
+                
+                if not rrsig_records:
+                    result["issues"].append("DNSSEC keys found but no signatures (RRSIG)")
+                    result["recommendations"].append("Enable DNSSEC signing for your zone")
+                
+                if result["valid"]:
+                    result["recommendations"].append("DNSSEC is properly configured and validating")
+        
+        except Exception as e:
+            result["issues"].append(f"Error checking DNSSEC: {str(e)}")
+        
+        return result
+
+    def check_caa(self):
+        """Check Certificate Authority Authorization (CAA) records."""
+        result = {
+            "present": False,
+            "records": [],
+            "authorized_cas": [],
+            "issue_policies": [],
+            "issuewild_policies": [],
+            "iodef_contacts": [],
+            "issues": [],
+            "recommendations": []
+        }
+        
+        try:
+            # Check for CAA records
+            caa_records, _ = self.get_dns_records("CAA")
+            result["records"] = caa_records
+            
+            if caa_records:
+                result["present"] = True
+                
+                for record in caa_records:
+                    record_str = str(record).strip()
+                    
+                    # Parse CAA record format: flag property value
+                    parts = record_str.split(' ', 2)
+                    if len(parts) >= 3:
+                        flag = parts[0]
+                        property_name = parts[1]
+                        value = ' '.join(parts[2:]).strip('"')
+                        
+                        if property_name == "issue":
+                            result["issue_policies"].append(value)
+                            if value and value != ";":
+                                result["authorized_cas"].append(value)
+                        elif property_name == "issuewild":
+                            result["issuewild_policies"].append(value)
+                            if value and value != ";":
+                                result["authorized_cas"].append(value)
+                        elif property_name == "iodef":
+                            result["iodef_contacts"].append(value)
+                
+                # Analyze CAA configuration
+                if not result["issue_policies"]:
+                    result["issues"].append("No 'issue' policy found in CAA records")
+                
+                # Check for restrictive policies
+                restrictive_issue = any(policy == ";" for policy in result["issue_policies"])
+                restrictive_wild = any(policy == ";" for policy in result["issuewild_policies"])
+                
+                if restrictive_issue and not restrictive_wild:
+                    result["issues"].append("Certificate issuance blocked but wildcard issuance not restricted")
+                    result["recommendations"].append("Consider adding 'issuewild ;' to block wildcard certificates")
+                
+                if result["authorized_cas"]:
+                    result["recommendations"].append(f"Certificates restricted to: {', '.join(set(result['authorized_cas']))}")
+                else:
+                    result["issues"].append("CAA records present but no certificate authorities authorized")
+                
+                if not result["iodef_contacts"]:
+                    result["recommendations"].append("Consider adding 'iodef' property for security incident reporting")
+            else:
+                result["recommendations"].append("Consider implementing CAA records to restrict certificate issuance")
+        
+        except Exception as e:
+            result["issues"].append(f"Error checking CAA records: {str(e)}")
+        
+        return result
+
+    def check_dns_over_https_tls(self):
+        """Check for DNS-over-HTTPS (DoH) and DNS-over-TLS (DoT) support."""
+        result = {
+            "doh_supported": False,
+            "dot_supported": False,
+            "doh_endpoints": [],
+            "dot_endpoints": [],
+            "issues": [],
+            "recommendations": []
+        }
+        
+        try:
+            # Check for DoH support via HTTPS resource records
+            https_records, _ = self.get_dns_records("HTTPS")
+            svcb_records, _ = self.get_dns_records("SVCB")
+            
+            # Check for DoH indicators in HTTPS/SVCB records
+            all_service_records = https_records + svcb_records
+            for record in all_service_records:
+                record_str = str(record).lower()
+                if 'doh' in record_str or 'dns-query' in record_str:
+                    result["doh_supported"] = True
+                    result["doh_endpoints"].append(str(record))
+            
+            # Check for DoT support by looking for _853._tcp DNS records
+            try:
+                dot_srv_records, _ = self.get_dns_records("SRV", f"_853._tcp.{self.name}")
+                if dot_srv_records:
+                    result["dot_supported"] = True
+                    result["dot_endpoints"] = dot_srv_records
+            except:
+                pass
+            
+            # Try to detect DoH/DoT by common patterns
+            # Check if the domain itself might be a DoH/DoT provider
+            domain_lower = self.name.lower()
+            if any(keyword in domain_lower for keyword in ['dns', 'resolver', 'doh', 'dot']):
+                # Try common DoH endpoint
+                try:
+                    doh_url = f"https://{self.name}/dns-query"
+                    response = requests.head(doh_url, timeout=5)
+                    if response.status_code in [200, 400, 405]:  # 400/405 might indicate DoH but wrong method
+                        result["doh_supported"] = True
+                        result["doh_endpoints"].append(doh_url)
+                except:
+                    pass
+            
+            # Generate recommendations
+            if not result["doh_supported"] and not result["dot_supported"]:
+                result["recommendations"].append("Consider supporting modern DNS protocols (DoH/DoT) for enhanced privacy")
+            else:
+                if result["doh_supported"]:
+                    result["recommendations"].append("DNS-over-HTTPS support detected - provides encrypted DNS queries")
+                if result["dot_supported"]:
+                    result["recommendations"].append("DNS-over-TLS support detected - provides encrypted DNS queries")
+        
+        except Exception as e:
+            result["issues"].append(f"Error checking DNS-over-HTTPS/TLS support: {str(e)}")
+        
+        return result
+
+    def discover_cloud_infrastructure(self):
+        """Comprehensive cloud infrastructure and service discovery."""
+        result = {
+            "cloud_providers": [],
+            "detected_services": [],
+            "cdn_providers": [],
+            "email_services": [],
+            "container_platforms": [],
+            "serverless_indicators": [],
+            "api_gateways": [],
+            "storage_services": [],
+            "details": {},
+            "confidence_scores": {},
+            "recommendations": []
+        }
+        
+        try:
+            # Collect all DNS records for analysis
+            all_records = {}
+            record_types = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV"]
+            
+            for record_type in record_types:
+                records, _ = self.get_dns_records(record_type)
+                if records:
+                    all_records[record_type] = records
+            
+            # Analyze A/AAAA records for cloud provider IP ranges
+            self._analyze_cloud_ip_ranges(all_records, result)
+            
+            # Analyze CNAME records for cloud services
+            self._analyze_cloud_cnames(all_records, result)
+            
+            # Analyze TXT records for cloud service verifications
+            self._analyze_cloud_txt_records(all_records, result)
+            
+            # Analyze MX records for cloud email services
+            self._analyze_cloud_email_services(all_records, result)
+            
+            # Analyze NS records for cloud DNS services
+            self._analyze_cloud_dns_services(all_records, result)
+            
+            # Analyze SRV records for cloud services
+            self._analyze_cloud_srv_records(all_records, result)
+            
+            # Generate confidence scores and recommendations
+            self._generate_cloud_insights(result)
+            
+        except Exception as e:
+            result["details"]["error"] = f"Error discovering cloud infrastructure: {str(e)}"
+        
+        return result
+
+    def _analyze_cloud_ip_ranges(self, all_records, result):
+        """Analyze IP addresses for cloud provider ranges."""
+        cloud_providers = {
+            'AWS': {
+                'ipv4_ranges': ['13.', '52.', '54.', '3.', '18.', '34.', '35.', '50.', '99.'],
+                'ipv6_ranges': ['2600:1f'],
+                'confidence': 0.9
+            },
+            'Google Cloud': {
+                'ipv4_ranges': ['34.', '35.', '104.154.', '130.211.', '146.148.', '104.196.', '104.197.'],
+                'ipv6_ranges': ['2001:4860'],
+                'confidence': 0.9
+            },
+            'Microsoft Azure': {
+                'ipv4_ranges': ['13.', '20.', '40.', '52.', '104.', '168.', '51.', '23.'],
+                'ipv6_ranges': ['2603:', '2620:1ec:'],
+                'confidence': 0.9
+            },
+            'Cloudflare': {
+                'ipv4_ranges': ['104.16.', '104.17.', '104.18.', '104.19.', '104.20.', '104.21.', '172.64.', '172.65.', '172.66.', '172.67.'],
+                'ipv6_ranges': ['2606:4700', '2803:f800', '2405:b500', '2405:8100'],
+                'confidence': 0.95
+            },
+            'DigitalOcean': {
+                'ipv4_ranges': ['138.197.', '159.89.', '165.227.', '167.99.', '178.62.', '188.166.', '206.189.'],
+                'ipv6_ranges': ['2604:a880'],
+                'confidence': 0.85
+            }
+        }
+        
+        for record_type in ['A', 'AAAA']:
+            if record_type in all_records:
+                for ip in all_records[record_type]:
+                    ip_str = str(ip)
+                    for provider, config in cloud_providers.items():
+                        ranges = config['ipv4_ranges'] if record_type == 'A' else config['ipv6_ranges']
+                        if any(ip_str.startswith(range_prefix) for range_prefix in ranges):
+                            if provider not in result["cloud_providers"]:
+                                result["cloud_providers"].append(provider)
+                                result["confidence_scores"][provider] = config['confidence']
+                            result["details"][f"{provider}_ips"] = result["details"].get(f"{provider}_ips", [])
+                            result["details"][f"{provider}_ips"].append(ip_str)
+
+    def _analyze_cloud_cnames(self, all_records, result):
+        """Analyze CNAME records for cloud service indicators."""
+        if "CNAME" not in all_records:
+            return
+            
+        cloud_services = {
+            'amazonaws.com': {'provider': 'AWS', 'service_type': 'compute', 'confidence': 0.95},
+            'elb.amazonaws.com': {'provider': 'AWS', 'service_type': 'load_balancer', 'confidence': 0.99},
+            'cloudfront.net': {'provider': 'AWS', 'service_type': 'cdn', 'confidence': 0.99},
+            's3.amazonaws.com': {'provider': 'AWS', 'service_type': 'storage', 'confidence': 0.99},
+            'googleusercontent.com': {'provider': 'Google Cloud', 'service_type': 'storage', 'confidence': 0.95},
+            'googleapis.com': {'provider': 'Google Cloud', 'service_type': 'api', 'confidence': 0.95},
+            'azurewebsites.net': {'provider': 'Microsoft Azure', 'service_type': 'web_app', 'confidence': 0.99},
+            'blob.core.windows.net': {'provider': 'Microsoft Azure', 'service_type': 'storage', 'confidence': 0.99},
+            'azureedge.net': {'provider': 'Microsoft Azure', 'service_type': 'cdn', 'confidence': 0.99},
+            'cloudflare.com': {'provider': 'Cloudflare', 'service_type': 'cdn', 'confidence': 0.95},
+            'herokuapp.com': {'provider': 'Heroku', 'service_type': 'paas', 'confidence': 0.99},
+            'netlify.com': {'provider': 'Netlify', 'service_type': 'static_hosting', 'confidence': 0.99},
+            'vercel.app': {'provider': 'Vercel', 'service_type': 'static_hosting', 'confidence': 0.99},
+            'github.io': {'provider': 'GitHub Pages', 'service_type': 'static_hosting', 'confidence': 0.99},
+            'fastly.com': {'provider': 'Fastly', 'service_type': 'cdn', 'confidence': 0.95}
+        }
+        
+        for cname in all_records["CNAME"]:
+            cname_str = str(cname).lower()
+            for pattern, info in cloud_services.items():
+                if pattern in cname_str:
+                    provider = info['provider']
+                    service_type = info['service_type']
+                    
+                    if provider not in result["cloud_providers"]:
+                        result["cloud_providers"].append(provider)
+                    
+                    service_info = f"{provider} {service_type}"
+                    if service_info not in result["detected_services"]:
+                        result["detected_services"].append(service_info)
+                    
+                    if service_type == 'cdn' and provider not in result["cdn_providers"]:
+                        result["cdn_providers"].append(provider)
+                    
+                    result["confidence_scores"][f"{provider}_{service_type}"] = info['confidence']
+                    result["details"][f"{provider}_cnames"] = result["details"].get(f"{provider}_cnames", [])
+                    result["details"][f"{provider}_cnames"].append(cname_str)
+
+    def _analyze_cloud_txt_records(self, all_records, result):
+        """Analyze TXT records for cloud service verification and configuration."""
+        if "TXT" not in all_records:
+            return
+            
+        verification_patterns = {
+            'google-site-verification=': {'provider': 'Google', 'service': 'Search Console', 'confidence': 0.9},
+            'MS=': {'provider': 'Microsoft', 'service': 'Office 365', 'confidence': 0.9},
+            'facebook-domain-verification=': {'provider': 'Facebook', 'service': 'Business Manager', 'confidence': 0.9},
+            'apple-domain-verification=': {'provider': 'Apple', 'service': 'App Store Connect', 'confidence': 0.9},
+            'adobe-idp-site-verification=': {'provider': 'Adobe', 'service': 'Creative Cloud', 'confidence': 0.9},
+            'amazonses:': {'provider': 'AWS', 'service': 'SES Email', 'confidence': 0.95},
+            'stripe-verification=': {'provider': 'Stripe', 'service': 'Payment Processing', 'confidence': 0.9},
+            'atlassian-domain-verification=': {'provider': 'Atlassian', 'service': 'Cloud Services', 'confidence': 0.9}
+        }
+        
+        for txt_record in all_records["TXT"]:
+            txt_str = str(txt_record).lower()
+            for pattern, info in verification_patterns.items():
+                if pattern in txt_str:
+                    provider = info['provider']
+                    service = info['service']
+                    
+                    service_info = f"{provider} {service}"
+                    if service_info not in result["detected_services"]:
+                        result["detected_services"].append(service_info)
+                    
+                    result["confidence_scores"][f"{provider}_{service}"] = info['confidence']
+
+    def _analyze_cloud_email_services(self, all_records, result):
+        """Analyze MX records for cloud email service providers."""
+        if "MX" not in all_records:
+            return
+            
+        email_providers = {
+            'google.com': {'provider': 'Google Workspace', 'confidence': 0.99},
+            'outlook.com': {'provider': 'Microsoft 365', 'confidence': 0.99},
+            'protection.outlook.com': {'provider': 'Microsoft 365', 'confidence': 0.99},
+            'amazonaws.com': {'provider': 'AWS SES', 'confidence': 0.95},
+            'sendgrid.net': {'provider': 'SendGrid', 'confidence': 0.99},
+            'mailgun.org': {'provider': 'Mailgun', 'confidence': 0.99},
+            'zoho.com': {'provider': 'Zoho Mail', 'confidence': 0.99}
+        }
+        
+        for mx_record in all_records["MX"]:
+            mx_str = str(mx_record).lower()
+            for pattern, info in email_providers.items():
+                if pattern in mx_str:
+                    provider = info['provider']
+                    if provider not in result["email_services"]:
+                        result["email_services"].append(provider)
+                    result["confidence_scores"][f"email_{provider}"] = info['confidence']
+
+    def _analyze_cloud_dns_services(self, all_records, result):
+        """Analyze NS records for cloud DNS service providers."""
+        if "NS" not in all_records:
+            return
+            
+        dns_providers = {
+            'amazonaws.com': {'provider': 'AWS Route 53', 'confidence': 0.99},
+            'azure-dns.com': {'provider': 'Azure DNS', 'confidence': 0.99},
+            'googledomains.com': {'provider': 'Google Cloud DNS', 'confidence': 0.99},
+            'cloudflare.com': {'provider': 'Cloudflare DNS', 'confidence': 0.99},
+            'ns1.com': {'provider': 'NS1', 'confidence': 0.99},
+            'dnsimple.com': {'provider': 'DNSimple', 'confidence': 0.99}
+        }
+        
+        for ns_record in all_records["NS"]:
+            ns_str = str(ns_record).lower()
+            for pattern, info in dns_providers.items():
+                if pattern in ns_str:
+                    provider = info['provider']
+                    service_info = f"DNS: {provider}"
+                    if service_info not in result["detected_services"]:
+                        result["detected_services"].append(service_info)
+                    result["confidence_scores"][f"dns_{provider}"] = info['confidence']
+
+    def _analyze_cloud_srv_records(self, all_records, result):
+        """Analyze SRV records for cloud service indicators."""
+        if "SRV" not in all_records:
+            return
+            
+        # SRV records often indicate specific cloud services
+        srv_services = {
+            '_sip': 'VoIP/Communications',
+            '_xmpp': 'Messaging Services',
+            '_caldav': 'Calendar Services',
+            '_carddav': 'Contact Services',
+            '_autodiscover': 'Microsoft Exchange',
+            '_matrix': 'Matrix Communications'
+        }
+        
+        for srv_record in all_records["SRV"]:
+            srv_str = str(srv_record).lower()
+            for service_name, description in srv_services.items():
+                if service_name in srv_str:
+                    service_info = f"Service: {description}"
+                    if service_info not in result["detected_services"]:
+                        result["detected_services"].append(service_info)
+
+    def _generate_cloud_insights(self, result):
+        """Generate insights and recommendations based on discovered cloud infrastructure."""
+        if result["cloud_providers"]:
+            if len(result["cloud_providers"]) == 1:
+                result["recommendations"].append(f"Single cloud provider detected: {result['cloud_providers'][0]}")
+            else:
+                result["recommendations"].append(f"Multi-cloud architecture detected: {', '.join(result['cloud_providers'])}")
+        
+        if result["cdn_providers"]:
+            result["recommendations"].append(f"CDN services in use: {', '.join(result['cdn_providers'])}")
+        
+        if result["email_services"]:
+            result["recommendations"].append(f"Cloud email services: {', '.join(result['email_services'])}")
+        
+        if not result["cloud_providers"]:
+            result["recommendations"].append("No major cloud providers detected - may be using traditional hosting")
+
+    def calculate_security_score(self, results):
+        """Calculate an overall security score based on various security indicators."""
+        score_breakdown = {
+            "dns_security": {"score": 0, "max": 25, "details": []},
+            "email_security": {"score": 0, "max": 35, "details": []},
+            "web_security": {"score": 0, "max": 25, "details": []},
+            "infrastructure": {"score": 0, "max": 15, "details": []}
+        }
+        
+        # DNS Security Scoring (25 points)
+        dnssec = results.get("dnssec", {})
+        if dnssec.get("enabled"):
+            if dnssec.get("valid"):
+                score_breakdown["dns_security"]["score"] += 15
+                score_breakdown["dns_security"]["details"].append("DNSSEC enabled and validating (+15)")
+            else:
+                score_breakdown["dns_security"]["score"] += 8
+                score_breakdown["dns_security"]["details"].append("DNSSEC enabled but has validation issues (+8)")
+        else:
+            score_breakdown["dns_security"]["details"].append("DNSSEC not enabled (-15)")
+        
+        caa = results.get("caa", {})
+        if caa.get("present"):
+            if caa.get("authorized_cas"):
+                score_breakdown["dns_security"]["score"] += 10
+                score_breakdown["dns_security"]["details"].append("CAA records properly configured (+10)")
+            else:
+                score_breakdown["dns_security"]["score"] += 5
+                score_breakdown["dns_security"]["details"].append("CAA records present but restrictive (+5)")
+        else:
+            score_breakdown["dns_security"]["details"].append("No CAA records (-10)")
+        
+        # Email Security Scoring (35 points)
+        dmarc = results.get("dmarc", {})
+        if dmarc.get("present"):
+            policy = dmarc.get("policy", "").lower()
+            if policy == "reject":
+                score_breakdown["email_security"]["score"] += 15
+                score_breakdown["email_security"]["details"].append("DMARC policy set to 'reject' (+15)")
+            elif policy == "quarantine":
+                score_breakdown["email_security"]["score"] += 12
+                score_breakdown["email_security"]["details"].append("DMARC policy set to 'quarantine' (+12)")
+            elif policy == "none":
+                score_breakdown["email_security"]["score"] += 5
+                score_breakdown["email_security"]["details"].append("DMARC policy set to 'none' (+5)")
+        else:
+            score_breakdown["email_security"]["details"].append("No DMARC policy (-15)")
+        
+        spf = results.get("spf", {})
+        spf_records = spf.get("records", [])
+        if spf_records:
+            if not spf.get("soft") and not spf.get("neutral"):
+                score_breakdown["email_security"]["score"] += 10
+                score_breakdown["email_security"]["details"].append("SPF properly configured with hard fail (+10)")
+            elif spf.get("soft"):
+                score_breakdown["email_security"]["score"] += 6
+                score_breakdown["email_security"]["details"].append("SPF configured with soft fail (+6)")
+            else:
+                score_breakdown["email_security"]["score"] += 3
+                score_breakdown["email_security"]["details"].append("SPF configured but neutral (+3)")
+        else:
+            score_breakdown["email_security"]["details"].append("No SPF record (-10)")
+        
+        dkim = results.get("dkim", {})
+        found_selectors = dkim.get("found_selectors", {})
+        valid_dkim_count = len([s for s in found_selectors.values() if s])
+        if valid_dkim_count >= 2:
+            score_breakdown["email_security"]["score"] += 10
+            score_breakdown["email_security"]["details"].append(f"Multiple DKIM selectors found ({valid_dkim_count}) (+10)")
+        elif valid_dkim_count == 1:
+            score_breakdown["email_security"]["score"] += 7
+            score_breakdown["email_security"]["details"].append("Single DKIM selector found (+7)")
+        else:
+            score_breakdown["email_security"]["details"].append("No DKIM selectors found (-10)")
+        
+        # Advanced Email Security Bonus
+        bimi = results.get("bimi", {})
+        mta_sts = results.get("mta_sts", {})
+        tls_rpt = results.get("tls_rpt", {})
+        
+        advanced_features = 0
+        if bimi.get("present") and not bimi.get("issues"):
+            advanced_features += 1
+            score_breakdown["email_security"]["details"].append("BIMI properly configured (bonus)")
+        if mta_sts.get("present") and mta_sts.get("policy_found"):
+            advanced_features += 1
+            score_breakdown["email_security"]["details"].append("MTA-STS properly configured (bonus)")
+        if tls_rpt.get("present") and not tls_rpt.get("issues"):
+            advanced_features += 1
+            score_breakdown["email_security"]["details"].append("TLS-RPT properly configured (bonus)")
+        
+        if advanced_features > 0:
+            bonus_points = min(advanced_features * 2, 5)  # Max 5 bonus points
+            score_breakdown["email_security"]["score"] += bonus_points
+        
+        # Web Security Scoring (25 points)
+        ssl = results.get("ssl", {})
+        if ssl.get("valid"):
+            score_breakdown["web_security"]["score"] += 15
+            score_breakdown["web_security"]["details"].append("Valid SSL/TLS certificate (+15)")
+            
+            # Check for strong security
+            if ssl.get("grade") and ssl.get("grade") in ["A+", "A"]:
+                score_breakdown["web_security"]["score"] += 5
+                score_breakdown["web_security"]["details"].append("Strong SSL/TLS configuration (+5)")
+        else:
+            score_breakdown["web_security"]["details"].append("Invalid or missing SSL/TLS certificate (-15)")
+        
+        # Security headers check (if available)
+        security_headers = results.get("security_headers", {})
+        if security_headers:
+            headers_count = sum(1 for header, present in security_headers.items() if present)
+            if headers_count >= 4:
+                score_breakdown["web_security"]["score"] += 5
+                score_breakdown["web_security"]["details"].append("Good security headers coverage (+5)")
+            elif headers_count >= 2:
+                score_breakdown["web_security"]["score"] += 3
+                score_breakdown["web_security"]["details"].append("Basic security headers present (+3)")
+        
+        # Infrastructure Scoring (15 points)
+        cloud_infrastructure = results.get("cloud_infrastructure", {})
+        cloud_providers = cloud_infrastructure.get("cloud_providers", [])
+        
+        if cloud_providers:
+            reputable_providers = ["AWS", "Google Cloud", "Microsoft Azure", "Cloudflare"]
+            reputable_count = len([p for p in cloud_providers if p in reputable_providers])
+            if reputable_count > 0:
+                score_breakdown["infrastructure"]["score"] += 10
+                score_breakdown["infrastructure"]["details"].append("Using reputable cloud providers (+10)")
+        
+        cdn_providers = cloud_infrastructure.get("cdn_providers", [])
+        if cdn_providers:
+            score_breakdown["infrastructure"]["score"] += 5
+            score_breakdown["infrastructure"]["details"].append("CDN services detected (+5)")
+        
+        # Calculate total score
+        total_score = sum(category["score"] for category in score_breakdown.values())
+        max_score = sum(category["max"] for category in score_breakdown.values())
+        percentage = (total_score / max_score) * 100
+        
+        # Determine grade
+        if percentage >= 90:
+            grade = "A+"
+            grade_description = "Excellent security posture"
+        elif percentage >= 80:
+            grade = "A"
+            grade_description = "Strong security posture"
+        elif percentage >= 70:
+            grade = "B"
+            grade_description = "Good security posture"
+        elif percentage >= 60:
+            grade = "C"
+            grade_description = "Adequate security posture"
+        elif percentage >= 50:
+            grade = "D"
+            grade_description = "Poor security posture"
+        else:
+            grade = "F"
+            grade_description = "Very poor security posture"
+        
+        return {
+            "total_score": total_score,
+            "max_score": max_score,
+            "percentage": round(percentage, 1),
+            "grade": grade,
+            "grade_description": grade_description,
+            "breakdown": score_breakdown
+        }
+
     def _check_bimi_dkim_indicators(self):
         """Check BIMI records which often indicate strong DKIM implementation."""
         selectors = {}
         
         try:
-            # Check for BIMI record
-            bimi_records, _ = self.get_txt_record(f"default._bimi.{self.name}")
-            if bimi_records:
+            # Use the comprehensive BIMI check
+            bimi_result = self.check_bimi()
+            if bimi_result["present"]:
                 # BIMI presence suggests sophisticated email setup, try enterprise selectors
                 enterprise_selectors = [
                     'default', 'production', 'enterprise', 'corporate', 'main',
@@ -1823,9 +2662,127 @@ class Inspector:
                 dns_summary = self._create_dns_security_summary(dns_results["records"], subdomain_count, wildcard_found)
                 if dns_summary:
                     console.print(dns_summary)
+                
+                # Advanced DNS Security Analysis
+                console.print("\n[*] Analyzing advanced DNS security configurations...")
+                
+                # DNSSEC Analysis
+                console.print("  [dim]DNSSEC provides cryptographic authentication for DNS responses[/dim]")
+                dnssec_results = self.domain.check_dnssec()
+                results["dnssec"] = dnssec_results
+                
+                if dnssec_results["enabled"]:
+                    if dnssec_results["valid"]:
+                        console.print("  [bold green]✓ DNSSEC enabled and validating[/bold green]")
+                    else:
+                        console.print("  [bold yellow]! DNSSEC enabled but validation issues detected[/bold yellow]")
+                    
+                    # Show DNSSEC record details
+                    if dnssec_results["ds_records"]:
+                        console.print(f"  DS Records: {len(dnssec_results['ds_records'])} found")
+                    if dnssec_results["dnskey_records"]:
+                        console.print(f"  DNSKEY Records: {len(dnssec_results['dnskey_records'])} found")
+                    if dnssec_results["rrsig_records"]:
+                        console.print(f"  RRSIG Records: {len(dnssec_results['rrsig_records'])} found")
+                    
+                    # Display DNSSEC issues
+                    for issue in dnssec_results["issues"]:
+                        console.print(f"  [yellow]! {issue}[/yellow]")
+                else:
+                    console.print("  [dim]• DNSSEC not implemented[/dim]")
+                
+                # Display DNSSEC recommendations
+                for recommendation in dnssec_results["recommendations"]:
+                    console.print(f"  [cyan]• {recommendation}[/cyan]")
+
+                # CAA Analysis
+                console.print("\n  [dim]CAA records restrict which Certificate Authorities can issue certificates[/dim]")
+                caa_results = self.domain.check_caa()
+                results["caa"] = caa_results
+                
+                if caa_results["present"]:
+                    console.print("  [bold green]✓ CAA records configured[/bold green]")
+                    if caa_results["authorized_cas"]:
+                        console.print(f"  Authorized CAs: {', '.join(set(caa_results['authorized_cas']))}")
+                    if caa_results["iodef_contacts"]:
+                        console.print(f"  Security contacts: {', '.join(caa_results['iodef_contacts'])}")
+                    
+                    # Display CAA issues
+                    for issue in caa_results["issues"]:
+                        console.print(f"  [yellow]! {issue}[/yellow]")
+                else:
+                    console.print("  [dim]• No CAA records found[/dim]")
+                
+                # Display CAA recommendations
+                for recommendation in caa_results["recommendations"]:
+                    console.print(f"  [cyan]• {recommendation}[/cyan]")
+
+                # DNS-over-HTTPS/TLS Analysis
+                console.print("\n  [dim]DoH/DoT provide encrypted DNS queries for enhanced privacy[/dim]")
+                doh_dot_results = self.domain.check_dns_over_https_tls()
+                results["dns_privacy"] = doh_dot_results
+                
+                if doh_dot_results["doh_supported"] or doh_dot_results["dot_supported"]:
+                    privacy_features = []
+                    if doh_dot_results["doh_supported"]:
+                        privacy_features.append("DNS-over-HTTPS")
+                    if doh_dot_results["dot_supported"]:
+                        privacy_features.append("DNS-over-TLS")
+                    
+                    console.print(f"  [bold green]✓ Modern DNS privacy protocols supported: {', '.join(privacy_features)}[/bold green]")
+                    
+                    if doh_dot_results["doh_endpoints"]:
+                        console.print(f"  DoH endpoints: {len(doh_dot_results['doh_endpoints'])} found")
+                    if doh_dot_results["dot_endpoints"]:
+                        console.print(f"  DoT endpoints: {len(doh_dot_results['dot_endpoints'])} found")
+                    
+                    # Display issues
+                    for issue in doh_dot_results["issues"]:
+                        console.print(f"  [yellow]! {issue}[/yellow]")
+                else:
+                    console.print("  [dim]• No modern DNS privacy protocols detected[/dim]")
+                
+                # Display recommendations
+                for recommendation in doh_dot_results["recommendations"]:
+                    console.print(f"  [cyan]• {recommendation}[/cyan]")
+
+                # Cloud Infrastructure Discovery
+                console.print("\n[*] Discovering cloud infrastructure and services...")
+                console.print("  [dim]Analyzing DNS patterns for cloud provider identification[/dim]")
+                cloud_results = self.domain.discover_cloud_infrastructure()
+                results["cloud_infrastructure"] = cloud_results
+                
+                if cloud_results["cloud_providers"]:
+                    console.print(f"  [bold green]✓ Cloud providers detected: {', '.join(cloud_results['cloud_providers'])}[/bold green]")
+                    
+                    if cloud_results["detected_services"]:
+                        console.print(f"  Services identified: {len(cloud_results['detected_services'])}")
+                        # Show first few services
+                        services_to_show = cloud_results["detected_services"][:3]
+                        for service in services_to_show:
+                            console.print(f"    • {service}")
+                        if len(cloud_results["detected_services"]) > 3:
+                            console.print(f"    • ... and {len(cloud_results['detected_services']) - 3} more services")
+                    
+                    if cloud_results["cdn_providers"]:
+                        console.print(f"  CDN services: {', '.join(cloud_results['cdn_providers'])}")
+                    
+                    if cloud_results["email_services"]:
+                        console.print(f"  Email services: {', '.join(cloud_results['email_services'])}")
+                else:
+                    console.print("  [dim]• No major cloud providers detected[/dim]")
+                
+                # Display cloud recommendations
+                for recommendation in cloud_results["recommendations"]:
+                    console.print(f"  [cyan]• {recommendation}[/cyan]")
+                    
             else:
                 results["dns_records"] = {}
                 results["meta_errors"] = []
+                results["dnssec"] = {"enabled": False}
+                results["caa"] = {"present": False}
+                results["dns_privacy"] = {"doh_supported": False, "dot_supported": False}
+                results["cloud_infrastructure"] = {"cloud_providers": []}
                 console.print("  [dim]No DNS record types configured for analysis[/dim]")
         else:
             # DNS section skipped
@@ -1833,6 +2790,10 @@ class Inspector:
             results["subdomains"] = []
             results["dns_records"] = {}
             results["meta_errors"] = []
+            results["dnssec"] = {"enabled": False}
+            results["caa"] = {"present": False}
+            results["dns_privacy"] = {"doh_supported": False, "dot_supported": False}
+            results["cloud_infrastructure"] = {"cloud_providers": []}
 
         # Email Security Section
         if self.config.get("run_email", True):
@@ -1990,6 +2951,73 @@ class Inspector:
             }
             results["email_platform"] = email_platform
             results["security_provider"] = security_provider
+
+            # Advanced Email Security Analysis
+            console.print("\n[*] Analyzing advanced email security configurations...")
+            
+            # BIMI (Brand Indicators for Message Identification) Analysis
+            console.print("  [dim]BIMI enables brand logos in email clients for verified domains[/dim]")
+            bimi_results = self.domain.check_bimi()
+            results["bimi"] = bimi_results
+            
+            if bimi_results["present"]:
+                console.print(f"  [bold green]✓ BIMI record found (selectors: {', '.join(bimi_results['selectors'])})[/bold green]")
+                if bimi_results["logo_url"]:
+                    console.print(f"  Logo URL: {bimi_results['logo_url']}")
+                if bimi_results["authority_url"]:
+                    console.print(f"  Authority URL: {bimi_results['authority_url']}")
+                
+                # Display BIMI issues
+                for issue in bimi_results["issues"]:
+                    console.print(f"  [yellow]! {issue}[/yellow]")
+            else:
+                console.print("  [dim]• No BIMI record found[/dim]")
+                
+            # Display BIMI recommendations
+            for recommendation in bimi_results["recommendations"]:
+                console.print(f"  [cyan]• {recommendation}[/cyan]")
+
+            # MTA-STS (Mail Transfer Agent Strict Transport Security) Analysis
+            console.print("\n  [dim]MTA-STS enforces TLS encryption for email transmission[/dim]")
+            mta_sts_results = self.domain.check_mta_sts()
+            results["mta_sts"] = mta_sts_results
+            
+            if mta_sts_results["present"]:
+                console.print("  [bold green]✓ MTA-STS policy configured[/bold green]")
+                if mta_sts_results["policy_found"]:
+                    console.print("  [green]✓ Policy file accessible[/green]")
+                else:
+                    console.print("  [yellow]! Policy TXT record found but policy file not accessible[/yellow]")
+                
+                # Display MTA-STS issues
+                for issue in mta_sts_results["issues"]:
+                    console.print(f"  [yellow]! {issue}[/yellow]")
+            else:
+                console.print("  [dim]• No MTA-STS policy found[/dim]")
+                
+            # Display MTA-STS recommendations
+            for recommendation in mta_sts_results["recommendations"]:
+                console.print(f"  [cyan]• {recommendation}[/cyan]")
+
+            # TLS-RPT (SMTP TLS Reporting) Analysis
+            console.print("\n  [dim]TLS-RPT provides reporting on SMTP TLS failures[/dim]")
+            tls_rpt_results = self.domain.check_tls_rpt()
+            results["tls_rpt"] = tls_rpt_results
+            
+            if tls_rpt_results["present"]:
+                console.print("  [bold green]✓ TLS-RPT configured[/bold green]")
+                if tls_rpt_results["rua"]:
+                    console.print(f"  Reporting addresses: {', '.join(tls_rpt_results['rua'])}")
+                
+                # Display TLS-RPT issues
+                for issue in tls_rpt_results["issues"]:
+                    console.print(f"  [yellow]! {issue}[/yellow]")
+            else:
+                console.print("  [dim]• No TLS-RPT configuration found[/dim]")
+                
+            # Display TLS-RPT recommendations
+            for recommendation in tls_rpt_results["recommendations"]:
+                console.print(f"  [cyan]• {recommendation}[/cyan]")
         else:
             # Email security section skipped
             results["dmarc"] = {"present": False}
@@ -2033,6 +3061,61 @@ class Inspector:
             # Web security section skipped
             results["ssl"] = {}
             results["security_headers"] = {}
+        
+        # Security Score Summary
+        console.print("\n[bold cyan]===== SECURITY SCORE =====[/bold cyan]")
+        console.print("  [dim]Overall security posture assessment based on comprehensive analysis[/dim]")
+        
+        security_score = self.domain.calculate_security_score(results)
+        results["security_score"] = security_score
+        
+        # Display overall score with appropriate color
+        grade = security_score["grade"]
+        percentage = security_score["percentage"]
+        
+        if grade in ["A+", "A"]:
+            grade_color = "bold green"
+        elif grade in ["B", "C"]:
+            grade_color = "bold yellow"
+        else:
+            grade_color = "bold red"
+        
+        console.print(f"\n[{grade_color}]Overall Security Grade: {grade} ({percentage}%)[/{grade_color}]")
+        console.print(f"[dim]{security_score['grade_description']}[/dim]")
+        console.print(f"Score: {security_score['total_score']}/{security_score['max_score']} points")
+        
+        # Display breakdown by category
+        console.print("\n[bold]Score Breakdown:[/bold]")
+        for category, data in security_score["breakdown"].items():
+            category_name = category.replace("_", " ").title()
+            score_pct = (data["score"] / data["max"]) * 100 if data["max"] > 0 else 0
+            
+            if score_pct >= 80:
+                status_color = "green"
+            elif score_pct >= 60:
+                status_color = "yellow"
+            else:
+                status_color = "red"
+            
+            console.print(f"  {category_name}: [{status_color}]{data['score']}/{data['max']} ({score_pct:.0f}%)[/{status_color}]")
+            
+            # Show key details
+            for detail in data["details"][:2]:  # Show top 2 details
+                console.print(f"    [dim]• {detail}[/dim]")
+        
+        # Security recommendations
+        all_recommendations = []
+        for category_data in security_score["breakdown"].values():
+            for detail in category_data["details"]:
+                if detail.startswith("No ") or "not enabled" in detail or detail.startswith("Invalid"):
+                    recommendation = detail.replace("(-", "(missing -").replace("No ", "Implement ").replace(" not enabled", " to enhance security")
+                    if recommendation not in all_recommendations:
+                        all_recommendations.append(recommendation)
+        
+        if all_recommendations:
+            console.print("\n[bold cyan]Priority Security Recommendations:[/bold cyan]")
+            for i, rec in enumerate(all_recommendations[:5], 1):  # Show top 5 recommendations
+                console.print(f"  {i}. {rec}")
         
         console.print()
         return results
@@ -2933,6 +4016,12 @@ def main():
     parser.add_argument(
         "--output-json", help="Write results to the given JSON file", default=None
     )
+    parser.add_argument(
+        "--output-csv", help="Write results to the given CSV file", default=None
+    )
+    parser.add_argument(
+        "--output-html", help="Write results to the given HTML file", default=None
+    )
     
     # Component selection flags
     component_group = parser.add_argument_group("Component Selection", 
@@ -3082,11 +4171,439 @@ def main():
     # Perform the inspection
     results = inspector.inspect()
 
+    # Export results in requested formats
     if args.output_json:
         with open(args.output_json, "w", encoding="utf-8") as fh:
             json.dump(results, fh, indent=2)
-        console.print(f"[green]Results written to {args.output_json}[/green]")
+        console.print(f"[green]JSON results written to {args.output_json}[/green]")
+    
+    if args.output_csv:
+        export_to_csv(results, args.output_csv)
+    
+    if args.output_html:
+        export_to_html(results, args.output_html)
 
+
+def export_to_csv(results, filename):
+    """Export scan results to CSV format."""
+    try:
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            
+            # Write header
+            writer.writerow(['Category', 'Type', 'Name', 'Value', 'Status', 'Details'])
+            
+            domain = results.get('domain', 'Unknown')
+            
+            # DNS Records
+            dns_records = results.get('dns_records', {})
+            for record_type, records in dns_records.items():
+                for record in records:
+                    writer.writerow(['DNS', record_type, domain, str(record), 'Found', ''])
+            
+            # Subdomains
+            subdomains = results.get('subdomains', [])
+            for subdomain in subdomains:
+                writer.writerow(['DNS', 'Subdomain', subdomain, '', 'Found', ''])
+            
+            # DNSSEC
+            dnssec = results.get('dnssec', {})
+            if dnssec.get('enabled'):
+                status = 'Valid' if dnssec.get('valid') else 'Invalid'
+                writer.writerow(['Security', 'DNSSEC', domain, '', status, f"DS: {len(dnssec.get('ds_records', []))}, DNSKEY: {len(dnssec.get('dnskey_records', []))}"])
+            
+            # CAA Records
+            caa = results.get('caa', {})
+            if caa.get('present'):
+                cas = ', '.join(caa.get('authorized_cas', []))
+                writer.writerow(['Security', 'CAA', domain, cas, 'Configured', ''])
+            
+            # Email Security
+            dmarc = results.get('dmarc', {})
+            if dmarc.get('present'):
+                policy = dmarc.get('policy', 'Unknown')
+                writer.writerow(['Email', 'DMARC', domain, policy, 'Configured', ''])
+            
+            spf = results.get('spf', {})
+            spf_records = spf.get('records', [])
+            for record in spf_records:
+                writer.writerow(['Email', 'SPF', domain, record, 'Configured', ''])
+            
+            dkim = results.get('dkim', {})
+            found_selectors = dkim.get('found_selectors', {})
+            for selector, record in found_selectors.items():
+                if record:
+                    writer.writerow(['Email', 'DKIM', f"{selector}._domainkey.{domain}", 'Present', 'Valid', ''])
+            
+            # Advanced Email Security
+            bimi = results.get('bimi', {})
+            if bimi.get('present'):
+                logo_url = bimi.get('logo_url', '')
+                writer.writerow(['Email', 'BIMI', domain, logo_url, 'Configured', f"Selectors: {', '.join(bimi.get('selectors', []))}"])
+            
+            mta_sts = results.get('mta_sts', {})
+            if mta_sts.get('present'):
+                policy_status = 'Valid' if mta_sts.get('policy_found') else 'TXT only'
+                writer.writerow(['Email', 'MTA-STS', domain, '', policy_status, ''])
+            
+            tls_rpt = results.get('tls_rpt', {})
+            if tls_rpt.get('present'):
+                rua = ', '.join(tls_rpt.get('rua', []))
+                writer.writerow(['Email', 'TLS-RPT', domain, rua, 'Configured', ''])
+            
+            # Cloud Infrastructure
+            cloud = results.get('cloud_infrastructure', {})
+            providers = cloud.get('cloud_providers', [])
+            for provider in providers:
+                writer.writerow(['Infrastructure', 'Cloud Provider', domain, provider, 'Detected', ''])
+            
+            services = cloud.get('detected_services', [])
+            for service in services:
+                writer.writerow(['Infrastructure', 'Cloud Service', domain, service, 'Detected', ''])
+            
+            # SSL/TLS
+            ssl = results.get('ssl', {})
+            if ssl.get('valid'):
+                issuer = ssl.get('issuer', 'Unknown')
+                expiry = ssl.get('expires', 'Unknown')
+                writer.writerow(['Security', 'SSL/TLS', domain, issuer, 'Valid', f"Expires: {expiry}"])
+            
+            # Security Score
+            security_score = results.get('security_score', {})
+            if security_score:
+                grade = security_score.get('grade', 'Unknown')
+                percentage = security_score.get('percentage', 0)
+                writer.writerow(['Assessment', 'Security Score', domain, f"{grade} ({percentage}%)", 'Calculated', f"Score: {security_score.get('total_score', 0)}/{security_score.get('max_score', 100)}"])
+        
+        console.print(f"[green]CSV results written to {filename}[/green]")
+        
+    except Exception as e:
+        console.print(f"[red]Error writing CSV file: {e}[/red]")
+
+def export_to_html(results, filename):
+    """Export scan results to HTML format with enhanced styling."""
+    try:
+        html_template = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DNS Inspector Report - {domain}</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }}
+        .header {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }}
+        .header h1 {{
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+        }}
+        .header p {{
+            margin: 10px 0 0 0;
+            opacity: 0.9;
+        }}
+        .content {{
+            padding: 30px;
+        }}
+        .section {{
+            margin-bottom: 40px;
+            border-left: 4px solid #667eea;
+            padding-left: 20px;
+        }}
+        .section h2 {{
+            color: #333;
+            margin-top: 0;
+            font-size: 1.8em;
+            font-weight: 400;
+        }}
+        .section h3 {{
+            color: #666;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }}
+        .status-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }}
+        .status-card {{
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            border-left: 4px solid #28a745;
+        }}
+        .status-card.warning {{
+            border-left-color: #ffc107;
+        }}
+        .status-card.error {{
+            border-left-color: #dc3545;
+        }}
+        .status-card.info {{
+            border-left-color: #17a2b8;
+        }}
+        .status-card h4 {{
+            margin: 0 0 10px 0;
+            color: #333;
+        }}
+        .status-card p {{
+            margin: 0;
+            color: #666;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        th, td {{
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }}
+        th {{
+            background: #667eea;
+            color: white;
+            font-weight: 500;
+        }}
+        tr:hover {{
+            background-color: #f8f9fa;
+        }}
+        .badge {{
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: 500;
+        }}
+        .badge.success {{ background: #d4edda; color: #155724; }}
+        .badge.warning {{ background: #fff3cd; color: #856404; }}
+        .badge.error {{ background: #f8d7da; color: #721c24; }}
+        .badge.info {{ background: #d1ecf1; color: #0c5460; }}
+        .footer {{
+            background: #f8f9fa;
+            padding: 20px;
+            text-align: center;
+            color: #666;
+            border-top: 1px solid #ddd;
+        }}
+        .code {{
+            background: #f8f9fa;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>DNS Inspector Report</h1>
+            <p>Domain: <strong>{domain}</strong> | Generated: {timestamp}</p>
+        </div>
+        
+        <div class="content">
+            {content}
+        </div>
+        
+        <div class="footer">
+            <p>Generated by DNS Inspector | <a href="https://github.com/mikeprivette/DNS-Inpsector">GitHub</a></p>
+        </div>
+    </div>
+</body>
+</html>
+        """
+        
+        domain = results.get('domain', 'Unknown')
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        content_sections = []
+        
+        # Summary Section
+        summary_cards = []
+        
+        # DNS Summary
+        dns_records = results.get('dns_records', {})
+        total_records = sum(len(records) for records in dns_records.values())
+        subdomains_count = len(results.get('subdomains', []))
+        
+        summary_cards.append(f"""
+            <div class="status-card info">
+                <h4>DNS Discovery</h4>
+                <p>{total_records} DNS records found across {len(dns_records)} types</p>
+                <p>{subdomains_count} subdomains discovered</p>
+            </div>
+        """)
+        
+        # Security Summary
+        security_features = []
+        if results.get('dnssec', {}).get('enabled'):
+            security_features.append('DNSSEC')
+        if results.get('caa', {}).get('present'):
+            security_features.append('CAA')
+        if results.get('dmarc', {}).get('present'):
+            security_features.append('DMARC')
+        
+        security_status = 'success' if len(security_features) >= 2 else 'warning' if security_features else 'error'
+        summary_cards.append(f"""
+            <div class="status-card {security_status}">
+                <h4>Security Features</h4>
+                <p>{len(security_features)} security features enabled</p>
+                <p>{', '.join(security_features) if security_features else 'No major security features detected'}</p>
+            </div>
+        """)
+        
+        # Cloud Infrastructure
+        cloud_providers = results.get('cloud_infrastructure', {}).get('cloud_providers', [])
+        cloud_status = 'info' if cloud_providers else 'warning'
+        summary_cards.append(f"""
+            <div class="status-card {cloud_status}">
+                <h4>Cloud Infrastructure</h4>
+                <p>{len(cloud_providers)} cloud providers detected</p>
+                <p>{', '.join(cloud_providers[:3]) if cloud_providers else 'Traditional hosting detected'}</p>
+            </div>
+        """)
+        
+        # Security Score Summary
+        security_score = results.get('security_score', {})
+        if security_score:
+            grade = security_score.get('grade', 'Unknown')
+            percentage = security_score.get('percentage', 0)
+            grade_color = 'success' if grade in ['A+', 'A'] else 'warning' if grade in ['B', 'C'] else 'error'
+            
+            summary_cards.append(f"""
+                <div class="status-card {grade_color}">
+                    <h4>Security Score</h4>
+                    <p>Grade: <strong>{grade}</strong> ({percentage}%)</p>
+                    <p>{security_score.get('grade_description', '')}</p>
+                </div>
+            """)
+        
+        content_sections.append(f"""
+            <div class="section">
+                <h2>Executive Summary</h2>
+                <div class="status-grid">
+                    {''.join(summary_cards)}
+                </div>
+            </div>
+        """)
+        
+        # DNS Records Section
+        if dns_records:
+            dns_table_rows = []
+            for record_type, records in dns_records.items():
+                for record in records:
+                    dns_table_rows.append(f"<tr><td>{record_type}</td><td class='code'>{record}</td></tr>")
+            
+            content_sections.append(f"""
+                <div class="section">
+                    <h2>DNS Records</h2>
+                    <table>
+                        <thead>
+                            <tr><th>Type</th><th>Value</th></tr>
+                        </thead>
+                        <tbody>
+                            {''.join(dns_table_rows)}
+                        </tbody>
+                    </table>
+                </div>
+            """)
+        
+        # Security Analysis Section
+        security_rows = []
+        
+        dnssec = results.get('dnssec', {})
+        if dnssec.get('enabled'):
+            status = 'Valid' if dnssec.get('valid') else 'Issues Detected'
+            badge_class = 'success' if dnssec.get('valid') else 'warning'
+            security_rows.append(f"<tr><td>DNSSEC</td><td><span class='badge {badge_class}'>{status}</span></td><td>DS: {len(dnssec.get('ds_records', []))}, DNSKEY: {len(dnssec.get('dnskey_records', []))}</td></tr>")
+        
+        caa = results.get('caa', {})
+        if caa.get('present'):
+            cas = ', '.join(caa.get('authorized_cas', []))
+            security_rows.append(f"<tr><td>CAA</td><td><span class='badge success'>Configured</span></td><td>{cas}</td></tr>")
+        
+        dmarc = results.get('dmarc', {})
+        if dmarc.get('present'):
+            policy = dmarc.get('policy', 'Unknown')
+            badge_class = 'success' if policy in ['quarantine', 'reject'] else 'warning'
+            security_rows.append(f"<tr><td>DMARC</td><td><span class='badge {badge_class}'>{policy}</span></td><td>{dmarc.get('rua', 'No reporting')}</td></tr>")
+        
+        if security_rows:
+            content_sections.append(f"""
+                <div class="section">
+                    <h2>Security Analysis</h2>
+                    <table>
+                        <thead>
+                            <tr><th>Feature</th><th>Status</th><th>Details</th></tr>
+                        </thead>
+                        <tbody>
+                            {''.join(security_rows)}
+                        </tbody>
+                    </table>
+                </div>
+            """)
+        
+        # Cloud Infrastructure Section  
+        if cloud_providers:
+            cloud_rows = []
+            for provider in cloud_providers:
+                cloud_rows.append(f"<tr><td>{provider}</td><td><span class='badge info'>Detected</span></td><td>Cloud Provider</td></tr>")
+            
+            services = results.get('cloud_infrastructure', {}).get('detected_services', [])
+            for service in services[:10]:  # Limit to first 10 services
+                cloud_rows.append(f"<tr><td>{service}</td><td><span class='badge info'>Active</span></td><td>Cloud Service</td></tr>")
+            
+            content_sections.append(f"""
+                <div class="section">
+                    <h2>Cloud Infrastructure</h2>
+                    <table>
+                        <thead>
+                            <tr><th>Service</th><th>Status</th><th>Type</th></tr>
+                        </thead>
+                        <tbody>
+                            {''.join(cloud_rows)}
+                        </tbody>
+                    </table>
+                </div>
+            """)
+        
+        final_html = html_template.format(
+            domain=domain,
+            timestamp=timestamp,
+            content=''.join(content_sections)
+        )
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(final_html)
+        
+        console.print(f"[green]HTML report written to {filename}[/green]")
+        
+    except Exception as e:
+        console.print(f"[red]Error writing HTML file: {e}[/red]")
 
 def print_banner(text):
     banner = pyfiglet.figlet_format(text)
