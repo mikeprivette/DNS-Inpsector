@@ -24,6 +24,11 @@ python3 dns_inspectah.py --dkim-discovery example.com # Comprehensive DKIM disco
 python3 dns_inspectah.py --no-subdomains example.com  # Skip subdomain enumeration
 ```
 
+## Code Quality Guidelines
+
+### Best Practices
+- Always use descriptive variable names
+
 ## Command Line Options
 
 ### Component Selection
@@ -39,7 +44,6 @@ python3 dns_inspectah.py --no-subdomains example.com  # Skip subdomain enumerati
 ### General Options
 - `--config CONFIG`: Path to configuration file (default: config.ini)
 - `--output-json FILE`: Write results to JSON file
-```
 
 ## Code Architecture
 
